@@ -25,7 +25,7 @@ const qoderPolicyQuotaCache = global._qoderPolicyQuotaCache;
 
 async function getQoderRemainingQuotaForPolicy(connection) {
   const cached = qoderPolicyQuotaCache.get(connection.id);
-  if (cached && Date.now() - cached.ts < QODER_POLICY_QUOTA_TTL_MS) return cached.remaining;
+  if (cached && Date.now() - cached.ts < QODER_POLICY_QUOTA_TTL_MS) return cached.quotaState || cached.remaining;
 
   const proxyConfig = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
   const usage = await getUsageForProvider(connection, {
@@ -36,9 +36,10 @@ async function getQoderRemainingQuotaForPolicy(connection) {
     strictProxy: false,
   });
   if (usage?.message || usage?.error) throw new Error(usage.message || usage.error);
-  const remaining = sumQoderRemainingQuota(usage).remaining;
-  qoderPolicyQuotaCache.set(connection.id, { remaining, ts: Date.now() });
-  return remaining;
+  const summed = sumQoderRemainingQuota(usage);
+  const quotaState = { remaining: summed.remaining, quotaRows: summed.rows };
+  qoderPolicyQuotaCache.set(connection.id, { quotaState, remaining: summed.remaining, ts: Date.now() });
+  return quotaState;
 }
 
 async function getQoderRemainingByConnectionId(connections, connectionIds) {

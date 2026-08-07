@@ -41,9 +41,25 @@ function normalizeBaseline(value) {
     result[id] = {
       initialRemainingQuota,
       capturedAt: typeof raw.capturedAt === "string" && raw.capturedAt ? raw.capturedAt : null,
+      quotaRows: normalizeQuotaRows(raw.quotaRows),
     };
   }
   return result;
+}
+
+function normalizeQuotaRows(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((row) => {
+      const normalized = {
+        name: typeof row?.name === "string" && row.name.trim() ? row.name.trim() : "",
+        remaining: Number(row?.remaining),
+      };
+      const total = Number(row?.total);
+      if (Number.isFinite(total) && total >= 0) normalized.total = total;
+      return normalized;
+    })
+    .filter((row) => row.name && Number.isFinite(row.remaining) && row.remaining >= 0);
 }
 
 function normalizeAccountAllocations(value, connectionIds) {
@@ -172,13 +188,14 @@ export function evaluateApiKeyProviderCreditUsage({ policy, provider, currentRem
 
   for (const connectionId of selectedConnectionIds) {
     const initial = Number(baseline[connectionId]?.initialRemainingQuota);
-    const current = Number(currentRemainingByConnectionId?.[connectionId]);
+    const currentState = normalizeCurrentQuotaState(currentRemainingByConnectionId?.[connectionId]);
+    const current = currentState.remaining;
     if (!Number.isFinite(initial) || !Number.isFinite(current)) {
       unavailableConnectionIds.push(connectionId);
       continue;
     }
     const accountLimit = getAccountAllocationLimit(providerPolicy, connectionId);
-    const consumed = Math.max(0, initial - current);
+    const consumed = calculateQuotaConsumed(baseline[connectionId], currentState);
     const countedConsumed = accountLimit > 0 ? Math.min(consumed, accountLimit) : 0;
     used += countedConsumed;
     if (current > 0 && consumed < accountLimit) {
@@ -195,6 +212,37 @@ export function evaluateApiKeyProviderCreditUsage({ policy, provider, currentRem
   return { allowed: true, used: usedAmount, limit, remaining, unavailableConnectionIds, activeConnectionId };
 }
 
+function normalizeCurrentQuotaState(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return {
+      remaining: Number(value.remaining),
+      quotaRows: normalizeQuotaRows(value.quotaRows),
+    };
+  }
+  return { remaining: Number(value), quotaRows: [] };
+}
+
+function calculateQuotaConsumed(baselineEntry, currentState) {
+  const baselineRows = normalizeQuotaRows(baselineEntry?.quotaRows);
+  const currentRows = normalizeQuotaRows(currentState?.quotaRows);
+  if (baselineRows.length > 0 && currentRows.length > 0) {
+    const currentByName = new Map(currentRows.map((row) => [row.name, row.remaining]));
+    return baselineRows.reduce((sum, row) => {
+      if (!currentByName.has(row.name)) return sum;
+      return sum + Math.max(0, row.remaining - currentByName.get(row.name));
+    }, 0);
+  }
+  const totalConsumed = Math.max(0, Number(baselineEntry?.initialRemainingQuota) - Number(currentState?.remaining));
+  if (currentRows.length > 0 && Number(currentState?.remaining) > Number(baselineEntry?.initialRemainingQuota)) {
+    const personal = currentRows.find((row) => row.name === "Personal" || row.name === "user");
+    const personalConsumed = personal && Number.isFinite(personal.total)
+      ? Math.max(0, personal.total - personal.remaining)
+      : 0;
+    return Math.max(totalConsumed, personalConsumed);
+  }
+  return totalConsumed;
+}
+
 export function buildQoderQuotaBaseline(accounts, selectedConnectionIds, capturedAt = new Date().toISOString()) {
   const selected = new Set(normalizeConnectionIds(selectedConnectionIds));
   const baseline = {};
@@ -203,6 +251,20 @@ export function buildQoderQuotaBaseline(accounts, selectedConnectionIds, capture
     baseline[account.id] = {
       initialRemainingQuota: Number(account.remainingQuota) || 0,
       capturedAt,
+    };
+  }
+  return baseline;
+}
+
+export function buildQoderQuotaBreakdownBaseline(accounts, selectedConnectionIds, capturedAt = new Date().toISOString()) {
+  const selected = new Set(normalizeConnectionIds(selectedConnectionIds));
+  const baseline = {};
+  for (const account of accounts || []) {
+    if (!selected.has(account?.id)) continue;
+    baseline[account.id] = {
+      initialRemainingQuota: Number(account.remainingQuota) || 0,
+      capturedAt,
+      quotaRows: normalizeQuotaRows(account.quotaRows),
     };
   }
   return baseline;

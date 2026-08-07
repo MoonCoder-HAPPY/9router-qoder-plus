@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { deleteApiKey, getApiKeyById, getOtherApiKeyPolicies, updateApiKey } from "@/lib/localDb";
 import {
-  buildQoderQuotaBaseline,
+  buildQoderQuotaBreakdownBaseline,
   getProviderPolicy,
   normalizeApiKeyPolicy,
   preserveQoderQuotaBaseline,
@@ -58,7 +58,7 @@ export async function PUT(request, { params }) {
             normalizedPolicy.providers.qoder = {
               ...normalizedPolicy.providers.qoder,
               startedAt: capturedAt,
-              quotaBaseline: buildQoderQuotaBaseline(accounts, qoderPolicy.connectionIds, capturedAt),
+              quotaBaseline: buildQoderQuotaBreakdownBaseline(accounts, qoderPolicy.connectionIds, capturedAt),
             };
           } else {
             normalizedPolicy.providers.qoder = preserveQoderQuotaBaseline(previousQoderPolicy, normalizedPolicy.providers.qoder);

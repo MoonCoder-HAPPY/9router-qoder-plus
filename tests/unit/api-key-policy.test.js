@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   API_KEY_POLICY_LIMIT_METRIC,
   buildQoderQuotaBaseline,
+  buildQoderQuotaBreakdownBaseline,
   getAccountAllocationLimit,
   getOrderedPolicyConnectionIds,
   getQoderCreditUsageSinceBaseline,
@@ -295,12 +296,93 @@ describe("api key policy", () => {
     });
   });
 
+  it("counts later account personal credits even when resource package remaining grows", () => {
+    const policy = normalizeApiKeyPolicy({
+      enabled: true,
+      providers: {
+        qoder: {
+          connectionIds: ["first", "second"],
+          priorityOrder: ["first", "second"],
+          accountAllocations: { first: 6000, second: 14000 },
+          quotaBaseline: {
+            first: {
+              initialRemainingQuota: 8166,
+              capturedAt: "2026-08-05T07:13:44.324Z",
+              quotaRows: [
+                { name: "Personal", remaining: 3000 },
+                { name: "Resource Package", remaining: 5166 },
+              ],
+            },
+            second: {
+              initialRemainingQuota: 108342,
+              capturedAt: "2026-08-05T07:13:44.324Z",
+              quotaRows: [
+                { name: "Personal", remaining: 3000 },
+                { name: "Resource Package", remaining: 105342 },
+              ],
+            },
+          },
+        },
+      },
+    });
+
+    expect(evaluateApiKeyProviderCreditUsage({
+      policy,
+      provider: "qoder",
+      currentRemainingByConnectionId: {
+        first: {
+          remaining: 2162,
+          quotaRows: [
+            { name: "Personal", remaining: 0, total: 3000 },
+            { name: "Resource Package", remaining: 2162, total: 20000 },
+          ],
+        },
+        second: {
+          remaining: 131517,
+          quotaRows: [
+            { name: "Personal", remaining: 973, total: 3000 },
+            { name: "Resource Package", remaining: 130544, total: -1 },
+          ],
+        },
+      },
+    })).toMatchObject({
+      allowed: true,
+      used: 8027,
+      limit: 20000,
+      remaining: 11973,
+      activeConnectionId: "second",
+    });
+  });
+
   it("builds Qoder quota baselines for selected accounts only", () => {
     expect(buildQoderQuotaBaseline([
       { id: "a", remainingQuota: 3000 },
       { id: "b", remainingQuota: 2000 },
     ], ["b"], "2026-07-28T03:00:00.000Z")).toEqual({
       b: { initialRemainingQuota: 2000, capturedAt: "2026-07-28T03:00:00.000Z" },
+    });
+  });
+
+  it("captures Qoder quota row baselines for selected accounts", () => {
+    expect(buildQoderQuotaBreakdownBaseline([
+      {
+        id: "a",
+        remainingQuota: 3000,
+        quotaRows: [
+          { name: "Personal", remaining: 1000 },
+          { name: "Resource Package", remaining: 2000 },
+        ],
+      },
+      { id: "b", remainingQuota: 2000, quotaRows: [{ name: "Personal", remaining: 2000 }] },
+    ], ["a"], "2026-08-07T03:00:00.000Z")).toEqual({
+      a: {
+        initialRemainingQuota: 3000,
+        capturedAt: "2026-08-07T03:00:00.000Z",
+        quotaRows: [
+          { name: "Personal", remaining: 1000 },
+          { name: "Resource Package", remaining: 2000 },
+        ],
+      },
     });
   });
 

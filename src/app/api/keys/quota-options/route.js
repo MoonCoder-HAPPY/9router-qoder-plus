@@ -42,7 +42,10 @@ export function buildQoderKeyUsageState(policy, accounts) {
   const currentRemainingByConnectionId = Object.fromEntries(
     (qoderPolicy.connectionIds || []).map((connectionId) => [
       connectionId,
-      Number(accountMap.get(connectionId)?.remainingQuota) || 0,
+      {
+        remaining: Number(accountMap.get(connectionId)?.remainingQuota) || 0,
+        quotaRows: accountMap.get(connectionId)?.quotaRows || [],
+      },
     ])
   );
   const usageState = evaluateApiKeyProviderCreditUsage({
