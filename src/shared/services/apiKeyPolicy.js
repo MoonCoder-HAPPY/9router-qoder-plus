@@ -198,7 +198,7 @@ export function evaluateApiKeyProviderCreditUsage({ policy, provider, currentRem
     const consumed = calculateQuotaConsumed(baseline[connectionId], currentState);
     const countedConsumed = accountLimit > 0 ? Math.min(consumed, accountLimit) : 0;
     used += countedConsumed;
-    if (current > 0 && consumed < accountLimit) {
+    if (current > 0 && consumed < accountLimit && !(consumed === 0 && hasQuotaGrownAboveBaseline(baseline[connectionId], currentState))) {
       activeConnectionId = connectionId;
       break;
     }
@@ -241,6 +241,16 @@ function calculateQuotaConsumed(baselineEntry, currentState) {
     return Math.max(totalConsumed, personalConsumed);
   }
   return totalConsumed;
+}
+
+function hasQuotaGrownAboveBaseline(baselineEntry, currentState) {
+  const baselineRows = normalizeQuotaRows(baselineEntry?.quotaRows);
+  const currentRows = normalizeQuotaRows(currentState?.quotaRows);
+  if (baselineRows.length > 0 && currentRows.length > 0) {
+    const baselineByName = new Map(baselineRows.map((row) => [row.name, row.remaining]));
+    return currentRows.some((row) => baselineByName.has(row.name) && row.remaining > baselineByName.get(row.name));
+  }
+  return Number(currentState?.remaining) > Number(baselineEntry?.initialRemainingQuota);
 }
 
 export function buildQoderQuotaBaseline(accounts, selectedConnectionIds, capturedAt = new Date().toISOString()) {

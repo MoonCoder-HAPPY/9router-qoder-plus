@@ -17,7 +17,7 @@ import {
   normalizeApiKeyPolicy,
   sumQoderRemainingQuota,
 } from "../../src/shared/services/apiKeyPolicy.js";
-import { buildQoderKeyUsageState, getAllocatedToAccount, validateQoderPolicyAllocation } from "../../src/app/api/keys/quota-options/route.js";
+import { buildQoderKeyUsageByKeyId, buildQoderKeyUsageState, getAllocatedToAccount, validateQoderPolicyAllocation } from "../../src/app/api/keys/quota-options/route.js";
 
 describe("api key policy", () => {
   it("normalizes missing and malformed policies to disabled", () => {
@@ -354,6 +354,137 @@ describe("api key policy", () => {
     });
   });
 
+  it("does not reset key usage to zero when an earlier priority resource package grows above baseline", () => {
+    const policy = normalizeApiKeyPolicy({
+      enabled: true,
+      providers: {
+        qoder: {
+          connectionIds: ["first", "second", "third"],
+          priorityOrder: ["first", "second", "third"],
+          accountAllocations: { first: 5000, second: 6000, third: 8000 },
+          quotaBaseline: {
+            first: {
+              initialRemainingQuota: 102981,
+              capturedAt: "2026-08-11T03:24:01.885Z",
+              quotaRows: [
+                { name: "Personal", remaining: 0, total: 3000 },
+                { name: "Resource Package", remaining: 102981 },
+              ],
+            },
+            second: {
+              initialRemainingQuota: 6216,
+              capturedAt: "2026-08-11T03:24:01.885Z",
+              quotaRows: [
+                { name: "Personal", remaining: 0, total: 3000 },
+                { name: "Resource Package", remaining: 6216, total: 12000 },
+              ],
+            },
+            third: {
+              initialRemainingQuota: 8116,
+              capturedAt: "2026-08-11T03:24:01.885Z",
+              quotaRows: [
+                { name: "Personal", remaining: 0, total: 3000 },
+                { name: "Resource Package", remaining: 8116, total: 25000 },
+              ],
+            },
+          },
+        },
+      },
+    });
+
+    expect(evaluateApiKeyProviderCreditUsage({
+      policy,
+      provider: "qoder",
+      currentRemainingByConnectionId: {
+        first: {
+          remaining: 128360,
+          quotaRows: [
+            { name: "Personal", remaining: 0, total: 3000 },
+            { name: "Resource Package", remaining: 128360, total: -1 },
+          ],
+        },
+        second: {
+          remaining: 4557,
+          quotaRows: [
+            { name: "Personal", remaining: 0, total: 3000 },
+            { name: "Resource Package", remaining: 4557, total: 12000 },
+          ],
+        },
+        third: {
+          remaining: 8056,
+          quotaRows: [
+            { name: "Personal", remaining: 0, total: 3000 },
+            { name: "Resource Package", remaining: 8056, total: 25000 },
+          ],
+        },
+      },
+    })).toMatchObject({
+      allowed: true,
+      used: 1659,
+      limit: 19000,
+      remaining: 17341,
+      activeConnectionId: "second",
+    });
+  });
+
+  it("keeps the first priority account active when it has no usage and no quota growth", () => {
+    const policy = normalizeApiKeyPolicy({
+      enabled: true,
+      providers: {
+        qoder: {
+          connectionIds: ["first", "second"],
+          priorityOrder: ["first", "second"],
+          accountAllocations: { first: 5000, second: 6000 },
+          quotaBaseline: {
+            first: {
+              initialRemainingQuota: 10000,
+              capturedAt: "2026-08-11T03:24:01.885Z",
+              quotaRows: [
+                { name: "Personal", remaining: 3000, total: 3000 },
+                { name: "Resource Package", remaining: 7000, total: 7000 },
+              ],
+            },
+            second: {
+              initialRemainingQuota: 6000,
+              capturedAt: "2026-08-11T03:24:01.885Z",
+              quotaRows: [
+                { name: "Personal", remaining: 3000, total: 3000 },
+                { name: "Resource Package", remaining: 3000, total: 3000 },
+              ],
+            },
+          },
+        },
+      },
+    });
+
+    expect(evaluateApiKeyProviderCreditUsage({
+      policy,
+      provider: "qoder",
+      currentRemainingByConnectionId: {
+        first: {
+          remaining: 10000,
+          quotaRows: [
+            { name: "Personal", remaining: 3000, total: 3000 },
+            { name: "Resource Package", remaining: 7000, total: 7000 },
+          ],
+        },
+        second: {
+          remaining: 5000,
+          quotaRows: [
+            { name: "Personal", remaining: 3000, total: 3000 },
+            { name: "Resource Package", remaining: 2000, total: 3000 },
+          ],
+        },
+      },
+    })).toMatchObject({
+      allowed: true,
+      used: 0,
+      limit: 11000,
+      remaining: 11000,
+      activeConnectionId: "first",
+    });
+  });
+
   it("builds Qoder quota baselines for selected accounts only", () => {
     expect(buildQoderQuotaBaseline([
       { id: "a", remainingQuota: 3000 },
@@ -543,6 +674,37 @@ describe("api key policy", () => {
       remaining: 24106,
       activeConnectionId: "a",
       activeAccountName: "Account A",
+    });
+  });
+
+  it("reports current Qoder key usage by key id for key list summaries", () => {
+    const policy = normalizeApiKeyPolicy({
+      enabled: true,
+      providers: {
+        qoder: {
+          connectionIds: ["a"],
+          priorityOrder: ["a"],
+          accountAllocations: { a: 5000 },
+          quotaBaseline: {
+            a: { initialRemainingQuota: 10000, capturedAt: "2026-08-11T03:24:01.885Z" },
+          },
+        },
+      },
+    });
+
+    expect(buildQoderKeyUsageByKeyId([
+      { id: "restricted", policy },
+      { id: "open", policy: { enabled: false, providers: {} } },
+    ], [
+      { id: "a", remainingQuota: 8765, quotaRows: [] },
+    ])).toMatchObject({
+      restricted: {
+        enabled: true,
+        used: 1235,
+        limit: 5000,
+        remaining: 3765,
+        activeConnectionId: "a",
+      },
     });
   });
 

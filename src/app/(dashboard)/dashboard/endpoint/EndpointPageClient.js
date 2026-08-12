@@ -18,6 +18,13 @@ import StatusAlert from "./components/StatusAlert";
 import Tooltip from "./components/Tooltip";
 import SecurityWarning from "./components/SecurityWarning";
 import ApiKeyRestrictionsModal from "./components/ApiKeyRestrictionsModal";
+
+function formatNumber(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value ?? "");
+  return new Intl.NumberFormat().format(n);
+}
+
 export default function APIPageClient({ machineId }) {
   const [keys, setKeys] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -26,6 +33,7 @@ export default function APIPageClient({ machineId }) {
   const [createdKey, setCreatedKey] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
   const [editingRestrictionsKey, setEditingRestrictionsKey] = useState(null);
+  const [keyQuotaUsage, setKeyQuotaUsage] = useState({});
 
   const [requireApiKey, setRequireApiKey] = useState(false);
   const [requireLogin, setRequireLogin] = useState(true);
@@ -260,7 +268,9 @@ export default function APIPageClient({ machineId }) {
       const keysRes = await fetch("/api/keys");
       const keysData = await keysRes.json();
       if (keysRes.ok) {
-        setKeys(keysData.keys || []);
+        const nextKeys = keysData.keys || [];
+        setKeys(nextKeys);
+        loadKeyQuotaUsage(nextKeys);
       }
     } catch (error) {
       console.log("Error fetching data:", error);
@@ -268,6 +278,22 @@ export default function APIPageClient({ machineId }) {
       setLoading(false);
     }
   };
+
+  async function loadKeyQuotaUsage(nextKeys) {
+    const restrictedKeys = (nextKeys || []).filter((key) => key.policy?.enabled && key.policy?.providers?.qoder);
+    if (restrictedKeys.length === 0) {
+      setKeyQuotaUsage({});
+      return;
+    }
+    try {
+      const res = await fetch("/api/keys/quota-options", { cache: "no-store" });
+      if (!res.ok) return setKeyQuotaUsage({});
+      const data = await res.json();
+      setKeyQuotaUsage(data?.providers?.qoder?.keyUsageByKeyId || {});
+    } catch {
+      setKeyQuotaUsage({});
+    }
+  }
 
   // u2500u2500u2500 Cloudflare Tunnel handlers
   // Ping tunnel health until reachable. Race multiple URLs (shortlink + direct) — 1 OK is enough.
@@ -683,13 +709,18 @@ export default function APIPageClient({ machineId }) {
     });
   };
 
-  const describeKeyPolicy = (policy) => {
+  const describeKeyPolicy = (key) => {
+    const policy = key?.policy;
     if (!policy?.enabled) return "Unrestricted";
     const qoder = policy.providers?.qoder;
     if (!qoder) return "Unrestricted";
     const accountCount = qoder.connectionIds?.length || 0;
     const limit = qoder.allocationLimit ?? "none";
-    return `Qoder: ${accountCount || "all"} accounts, ${limit} credits`;
+    const usage = keyQuotaUsage[key.id];
+    const credits = usage?.enabled && Number.isFinite(Number(usage.used)) && usage.limit !== null && usage.limit !== undefined
+      ? `${formatNumber(usage.used)}/${formatNumber(usage.limit)}`
+      : formatNumber(limit);
+    return `Qoder: ${accountCount || "all"} accounts, ${credits} credits`;
   };
 
   const [baseUrl, setBaseUrl] = useState("/v1");
@@ -1036,7 +1067,7 @@ export default function APIPageClient({ machineId }) {
                     Created {new Date(key.createdAt).toLocaleDateString()}
                   </p>
                   <p className="text-xs text-text-muted mt-1">
-                    {describeKeyPolicy(key.policy)}
+                    {describeKeyPolicy(key)}
                   </p>
                   {key.isActive === false && (
                     <p className="text-xs text-orange-500 mt-1">Paused</p>

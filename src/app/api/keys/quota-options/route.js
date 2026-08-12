@@ -67,6 +67,14 @@ export function buildQoderKeyUsageState(policy, accounts) {
   };
 }
 
+export function buildQoderKeyUsageByKeyId(keys, accounts) {
+  return Object.fromEntries(
+    (keys || [])
+      .map((key) => [key.id, buildQoderKeyUsageState(key.policy, accounts)])
+      .filter(([keyId, usage]) => keyId && usage?.enabled)
+  );
+}
+
 export async function buildQoderQuotaOptions({ excludeKeyId = null } = {}) {
   const [connections, keys] = await Promise.all([
     getProviderConnections({ provider: "qoder", isActive: true }),
@@ -123,6 +131,7 @@ export async function buildQoderQuotaOptions({ excludeKeyId = null } = {}) {
       qoder: {
         accounts,
         keyUsage: buildQoderKeyUsageState(currentKey?.policy, accounts),
+        keyUsageByKeyId: buildQoderKeyUsageByKeyId(keys, accounts),
       },
     },
   };
