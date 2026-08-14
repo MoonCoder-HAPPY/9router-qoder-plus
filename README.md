@@ -84,13 +84,13 @@ _消费优先级单独设置，明确控制多个已选账号的消费顺序，�
 Qoder 官方软件里可选的模型，有些不会稳定出现在 9Router 原始模型列表中。本版增强了模型发现和对外 ID 展示：
 
 - 优先从 Qoder `/model/list` 获取实时 enabled chat 模型，避免静态列表跟不上 Qoder 官方软件里的新模型。
-- 新模型会直接使用 Qoder 返回的 `display_name` 作为默认对外模型 ID，例如 `Qwen3.8-Max`、`GLM-5.3`。
+- 新模型会直接使用 Qoder 返回的 `display_name` 作为默认对外模型 ID，例如 `Qwen3.8-Max`、`Kimi-K3`。
 - 如果 Qoder live catalog 获取成功，`/v1/models` 只暴露当前 live catalog 中仍存在的模型；已经从 Qoder 移除的旧模型不会再因为历史自定义模型或 alias 重新出现在模型列表里。
-- `/v1/models` 中 Qoder 模型默认返回 `GLM-5.2` 这类可读名称，不再把 `qd/gm51model` 作为主展示 ID。
+- `/v1/models` 中 Qoder 模型默认返回 `Qwen3.8-Max` 这类可读名称，不再把 `qd/qmodel_38max` 作为主展示 ID。
 - Dashboard -> Providers -> Qoder 的模型卡片可以编辑 `Public Model ID`，用于控制客户端看到和调用的模型 ID。
 - 编辑弹窗中保留只读的 `Qoder Internal ID`，用于排查真实上游绑定关系。
-- 客户端可以直接请求 `{ "model": "GLM-5.2" }`，9Router 会在内部映射回 Qoder 真实 key `gm51model`。
-- 旧调用方式 `qd/<model>`、`qoder/<model>` 继续兼容；同时兼容裸内部 ID，例如 `gm51model`。如果你已经配置了同名 model alias，alias 会优先于 Qoder 内部 ID。
+- 客户端可以直接请求 `{ "model": "Qwen3.8-Max" }`，9Router 会在内部映射回 Qoder 真实 key `qmodel_38max`。
+- 旧调用方式 `qd/<model>`、`qoder/<model>` 继续兼容；同时兼容裸内部 ID，例如 `qmodel_38max`。如果你已经配置了同名 model alias，alias 会优先于 Qoder 内部 ID。
 - 识别并透传 Qoder 返回的 `price_factor` / `original_price_factor`，模型卡片会展示 `0.6x 额度倍率` 这类倍率标签，`/v1/models` 也会返回对应字段。
 
 ![Qoder model list with display names and credit multipliers](docs/images/qoder-model-list-enhanced.png)
