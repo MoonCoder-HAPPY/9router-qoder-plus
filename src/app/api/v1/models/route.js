@@ -17,6 +17,7 @@ import { resolveCursorModels } from "open-sse/services/cursorModels.js";
 import { updateProviderCredentials } from "@/sse/services/tokenRefresh";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { capabilitiesFromServiceKind, getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
+import { decorateQoderModelsForPublic } from "@/lib/qoder/publicModels.js";
 
 // Per-provider live model resolvers. Each receives a connection record and
 // returns { models: [{ id, name? }, ...] } | null on failure.
@@ -40,7 +41,7 @@ const LIVE_MODEL_RESOLVERS = {
     });
     if (!result?.models?.length) return null;
     return {
-      models: result.models.map((m) => ({ id: m.id, name: m.name })),
+      models: await decorateQoderModelsForPublic(result.models),
     };
   },
   kimchi: async (conn) => {
@@ -297,13 +298,18 @@ export async function buildModelsList(kindFilter, options = {}) {
     for (const [alias, providerModels] of Object.entries(PROVIDER_MODELS)) {
       const providerId = aliasToProviderId[alias] || alias;
       if (!providerMatchesKinds(providerId, kindFilter)) continue;
-      for (const model of providerModels) {
+      const publicProviderModels = providerId === "qoder"
+        ? await decorateQoderModelsForPublic(providerModels)
+        : providerModels;
+      for (const model of publicProviderModels) {
         if (!kindFilter.includes(modelKind(model))) continue;
-        if (isDisabled(alias, model.id)) continue;
+        const internalModelId = providerId === "qoder" ? model.internalId : model.id;
+        if (isDisabled(alias, internalModelId)) continue;
         models.push({
-          id: `${alias}/${model.id}`,
+          id: providerId === "qoder" ? model.id : `${alias}/${model.id}`,
           object: "model",
-          owned_by: alias,
+          owned_by: providerId === "qoder" ? "qoder" : alias,
+          ...(providerId === "qoder" ? { name: model.name } : {}),
         });
       }
     }
@@ -335,6 +341,9 @@ export async function buildModelsList(kindFilter, options = {}) {
         || staticAlias
       ).trim();
       const providerModels = PROVIDER_MODELS[staticAlias] || [];
+      const publicProviderModels = providerId === "qoder"
+        ? await decorateQoderModelsForPublic(providerModels)
+        : providerModels;
       const enabledModels = conn?.providerSpecificData?.enabledModels;
       const hasExplicitEnabledModels =
         Array.isArray(enabledModels) && enabledModels.length > 0;
@@ -343,10 +352,11 @@ export async function buildModelsList(kindFilter, options = {}) {
 
       // Build kind lookup for static models so we can filter even when only IDs are exposed
       const staticModelKindById = new Map(
-        providerModels.map((m) => [m.id, modelKind(m)])
+        publicProviderModels.map((m) => [m.internalId || m.id, modelKind(m)])
       );
       let liveModelKindById = new Map();
       let liveCapabilitiesById = new Map();
+      let publicModelByInternalId = new Map();
 
       let rawModelIds = hasExplicitEnabledModels
         ? Array.from(
@@ -356,7 +366,14 @@ export async function buildModelsList(kindFilter, options = {}) {
               ),
             ),
           )
-        : providerModels.map((model) => model.id);
+        : publicProviderModels.map((model) => model.internalId || model.id);
+      if (providerId === "qoder") {
+        publicModelByInternalId = new Map(
+          publicProviderModels
+            .filter((m) => m?.internalId && m?.id)
+            .map((m) => [m.internalId, m])
+        );
+      }
 
       if (isCompatibleProvider && rawModelIds.length === 0 && !skipDynamicFetch) {
         rawModelIds = await fetchCompatibleModelIds(conn);
@@ -370,17 +387,24 @@ export async function buildModelsList(kindFilter, options = {}) {
         try {
           const live = await liveResolver(conn);
           if (live?.models?.length) {
-            rawModelIds = live.models.map((m) => m.id);
+            rawModelIds = live.models.map((m) => m.internalId || m.id);
             liveModelKindById = new Map(
               live.models
                 .filter((m) => m?.id)
-                .map((m) => [m.id, modelKind(m)])
+                .map((m) => [m.internalId || m.id, modelKind(m)])
             );
             liveCapabilitiesById = new Map(
               live.models
                 .filter((m) => m?.id && m.capabilities)
-                .map((m) => [m.id, m.capabilities])
+                .map((m) => [m.internalId || m.id, m.capabilities])
             );
+            if (providerId === "qoder") {
+              publicModelByInternalId = new Map(
+                live.models
+                  .filter((m) => m?.internalId && m?.id)
+                  .map((m) => [m.internalId, m])
+              );
+            }
           }
         } catch (err) {
           console.log(`Live model fetch failed for ${providerId}: ${err?.message || err}`);
@@ -415,6 +439,7 @@ export async function buildModelsList(kindFilter, options = {}) {
         })
         .map((m) => {
           const modelId = String(m.id).trim();
+          if (providerId === "qoder" && publicModelByInternalId.has(modelId)) return "";
           if (modelId) customModelKindById.set(modelId, getModelKind(m) || LLM_KIND);
           return modelId;
         })
@@ -441,6 +466,7 @@ export async function buildModelsList(kindFilter, options = {}) {
           }
           return fullModel;
         })
+        .filter((modelId) => providerId !== "qoder" || !publicModelByInternalId.has(modelId))
         .filter((modelId) => typeof modelId === "string" && modelId.trim() !== "");
 
       const mergedModelIds = Array.from(new Set([...modelIds, ...customModelIds, ...aliasModelIds]));
@@ -455,11 +481,14 @@ export async function buildModelsList(kindFilter, options = {}) {
         if (!kindFilter.includes(kind) && !allowAsLlm) continue;
         if (isDisabled(outputAlias, modelId) || isDisabled(staticAlias, modelId)) continue;
 
+        const qoderPublicModel = providerId === "qoder" ? publicModelByInternalId.get(modelId) : null;
+        const outputModelId = qoderPublicModel?.id || `${outputAlias}/${modelId}`;
         const model = {
-          id: `${outputAlias}/${modelId}`,
+          id: outputModelId,
           object: "model",
-          owned_by: outputAlias,
+          owned_by: providerId === "qoder" ? "qoder" : outputAlias,
         };
+        if (qoderPublicModel?.name) model.name = qoderPublicModel.name;
         // Live-catalog resolvers (kiro/qoder/github/clinepass) mostly only return
         // { id, name } — no per-model capability data. Fall back to the same
         // pattern-matched capabilities the dashboard uses (useModelCaps.js) so

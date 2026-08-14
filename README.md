@@ -81,12 +81,15 @@ _消费优先级单独设置，明确控制多个已选账号的消费顺序，�
 
 ### Qoder 模型列表增强
 
-Qoder 官方软件里可选的模型，有些不会稳定出现在 9Router 原始模型列表中。本版增加了静态兜底：
+Qoder 官方软件里可选的模型，有些不会稳定出现在 9Router 原始模型列表中。本版增强了模型发现和对外 ID 展示：
 
 - 增加当前 Qoder enabled 的 14 个 chat 模型兜底。
-- `GLM-5.2` 使用 Qoder 真实 key：`gm51model`。
-- 模型显示名对齐 Qoder `/model/list` 的 `display_name`。
-- 保留 9Router 的 `qd/<model>`、`qoder/<model>` 调用风格。
+- 优先从 Qoder `/model/list` 获取实时模型，并使用返回的 `display_name` 作为默认对外模型 ID。
+- `/v1/models` 中 Qoder 模型默认返回 `GLM-5.2` 这类可读名称，不再把 `qd/gm51model` 作为主展示 ID。
+- Dashboard -> Providers -> Qoder 的模型卡片可以编辑 `Public Model ID`，用于控制客户端看到和调用的模型 ID。
+- 编辑弹窗中保留只读的 `Qoder Internal ID`，用于排查真实上游绑定关系。
+- 客户端可以直接请求 `{ "model": "GLM-5.2" }`，9Router 会在内部映射回 Qoder 真实 key `gm51model`。
+- 旧调用方式 `qd/<model>`、`qoder/<model>` 继续兼容，但主要推荐使用 display name 或你在页面自定义的 public ID。
 
 ### 钉钉告警
 

@@ -79,6 +79,10 @@ export default function ProviderDetailPage() {
   const [oneByOneSummary, setOneByOneSummary] = useState(null);
   const stopOneByOneRef = useRef(false);
   const [importingQoderModels, setImportingQoderModels] = useState(false);
+  const [editingQoderModel, setEditingQoderModel] = useState(null);
+  const [editingQoderPublicId, setEditingQoderPublicId] = useState("");
+  const [qoderPublicModelError, setQoderPublicModelError] = useState("");
+  const [savingQoderPublicModel, setSavingQoderPublicModel] = useState(false);
   const { copied, copy } = useCopyToClipboard();
 
   const AG_RISK_STORAGE_KEY = "ag_risk_confirmed";
@@ -144,9 +148,21 @@ export default function ProviderDetailPage() {
   const supportsApiKeyAuth = !!APIKEY_PROVIDERS[providerId] || authModes.includes("apikey");
   const isFreeNoAuth = !!FREE_PROVIDERS[providerId]?.noAuth;
   const staticModels = getModelsByProviderId(providerId);
-  const models = providerId === "cursor" && liveModels.length > 0
-    ? liveModels
+  const displayStaticModels = providerId === "qoder"
+    ? staticModels.map((model) => ({
+        ...model,
+        id: model.name || model.id,
+        name: model.name || model.id,
+        publicId: model.name || model.id,
+        displayName: model.name || model.id,
+        internalId: model.id,
+        qoderInternalId: model.id,
+        defaultPublicId: model.name || model.id,
+      }))
     : staticModels;
+  const models = (providerId === "cursor" || providerId === "qoder") && liveModels.length > 0
+    ? liveModels
+    : displayStaticModels;
   const providerAlias = getProviderAlias(providerId);
   
   const isOpenAICompatible = isOpenAICompatibleProvider(providerId);
@@ -192,6 +208,9 @@ export default function ProviderDetailPage() {
   const providerDisplayAlias = isCompatible
     ? (providerNode?.prefix || providerId)
     : providerAlias;
+  const getQoderInternalModelId = (model) => model?.internalId || model?.qoderInternalId || model?.id;
+  const getRuntimeModelId = (model) => providerId === "qoder" ? getQoderInternalModelId(model) : model?.id;
+  const getDisplayedModelId = (model) => model?.id;
 
   const fetchDisabledModels = useCallback(async () => {
     try {
@@ -450,6 +469,62 @@ export default function ProviderDetailPage() {
     saveAutoPing({ ...autoPing, connections: { ...autoPing.connections, [connectionId]: on } });
   };
 
+  const fetchLiveModelsForConnection = useCallback(async (connectionId) => {
+    const res = await fetch(`/api/providers/${connectionId}/models`, { cache: "no-store" });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || translate("Failed to fetch models"));
+    }
+    return Array.isArray(data.models) ? data.models : [];
+  }, []);
+
+  const refreshQoderLiveModels = useCallback(async () => {
+    if (providerId !== "qoder") return;
+    const activeConnection = connections.find((conn) => conn.isActive !== false);
+    if (!activeConnection?.id) return;
+    const fetchedModels = await fetchLiveModelsForConnection(activeConnection.id);
+    if (fetchedModels.length > 0) setLiveModels(fetchedModels);
+  }, [connections, fetchLiveModelsForConnection, providerId]);
+
+  const openEditQoderModel = (model) => {
+    setEditingQoderModel(model);
+    setEditingQoderPublicId(model?.id || "");
+    setQoderPublicModelError("");
+  };
+
+  const closeEditQoderModel = () => {
+    if (savingQoderPublicModel) return;
+    setEditingQoderModel(null);
+    setEditingQoderPublicId("");
+    setQoderPublicModelError("");
+  };
+
+  const handleSaveQoderPublicModel = async () => {
+    if (!editingQoderModel) return;
+    const internalId = getQoderInternalModelId(editingQoderModel);
+    setSavingQoderPublicModel(true);
+    setQoderPublicModelError("");
+    try {
+      const res = await fetch("/api/qoder/public-models", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ internalId, publicId: editingQoderPublicId }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setQoderPublicModelError(data.error || translate("Failed to save Qoder public model ID"));
+        return;
+      }
+      await refreshQoderLiveModels();
+      setEditingQoderModel(null);
+      setEditingQoderPublicId("");
+    } catch (error) {
+      setQoderPublicModelError(error.message || translate("Failed to save Qoder public model ID"));
+    } finally {
+      setSavingQoderPublicModel(false);
+    }
+  };
+
   useEffect(() => {
     fetchConnections();
     fetchAliases();
@@ -457,11 +532,10 @@ export default function ProviderDetailPage() {
     fetchDisabledModels();
   }, [fetchConnections, fetchAliases, fetchCustomModels, fetchDisabledModels]);
 
-  // Cursor's model availability is account-specific and changes frequently.
-  // Load the active account's live catalog for the dashboard; the static
-  // registry remains the fallback while the request is pending or unavailable.
+  // Cursor and Qoder model availability can change per account. Load the active
+  // account's live catalog; the static registry remains the fallback.
   useEffect(() => {
-    if (providerId !== "cursor") {
+    if (providerId !== "cursor" && providerId !== "qoder") {
       setLiveModels([]);
       return;
     }
@@ -473,17 +547,16 @@ export default function ProviderDetailPage() {
     }
 
     let cancelled = false;
-    fetch(`/api/providers/${connection.id}/models`, { cache: "no-store" })
-      .then(async (res) => ({ ok: res.ok, data: await res.json() }))
-      .then(({ ok, data }) => {
-        if (!cancelled && ok && Array.isArray(data.models) && data.models.length > 0) {
-          setLiveModels(data.models);
+    fetchLiveModelsForConnection(connection.id)
+      .then((fetchedModels) => {
+        if (!cancelled && fetchedModels.length > 0) {
+          setLiveModels(fetchedModels);
         }
       })
       .catch(() => {});
 
     return () => { cancelled = true; };
-  }, [providerId, connections]);
+  }, [providerId, connections, fetchLiveModelsForConnection]);
 
   // Fetch suggested models from provider's public API (if configured)
   useEffect(() => {
@@ -567,20 +640,20 @@ export default function ProviderDetailPage() {
 
     setImportingQoderModels(true);
     try {
-      const res = await fetch(`/api/providers/${activeConnection.id}/models`);
-      const data = await res.json();
-      if (!res.ok) {
-        alert(data.error || translate("Failed to fetch models"));
-        return;
-      }
-      const models = data.models || [];
-      if (models.length === 0) {
+      const fetchedModels = await fetchLiveModelsForConnection(activeConnection.id);
+      if (fetchedModels.length === 0) {
         alert(translate("No models returned"));
         return;
       }
 
+      if (providerId === "qoder") {
+        setLiveModels(fetchedModels);
+        alert(translate("Qoder models refreshed"));
+        return;
+      }
+
       let importedCount = 0;
-      for (const model of models) {
+      for (const model of fetchedModels) {
         const modelId = model.id || model.name;
         if (!modelId) continue;
         
@@ -1052,11 +1125,12 @@ export default function ProviderDetailPage() {
   const handleTestModel = async (modelId) => {
     if (testingModelIds.has(modelId)) return;
     setTestingModelIds((prev) => new Set(prev).add(modelId));
+    const requestModel = providerId === "qoder" ? modelId : `${providerStorageAlias}/${modelId}`;
     try {
       const res = await fetch("/api/models/test", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: `${providerStorageAlias}/${modelId}` }),
+        body: JSON.stringify({ model: requestModel }),
       });
       const data = await res.json();
       setModelTestResults((prev) => ({ ...prev, [modelId]: data.ok ? "ok" : "error" }));
@@ -1095,15 +1169,18 @@ export default function ProviderDetailPage() {
       ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)),
     ].filter((m) => { const k = getModelKind(m); return !k || k === "llm"; });
     const disabledSet = new Set(disabledModelIds);
-    const displayModels = allModels.filter((m) => !disabledSet.has(m.id));
-    const disabledDisplayModels = allModels.filter((m) => disabledSet.has(m.id));
+    const displayModels = allModels.filter((m) => !disabledSet.has(getRuntimeModelId(m)));
+    const disabledDisplayModels = allModels.filter((m) => disabledSet.has(getRuntimeModelId(m)));
     const customModelRows = getProviderCustomModelRows({
       customModels,
       modelAliases,
       providerAlias: providerStorageAlias,
       builtInModels: models,
       type: "llm",
-    });
+    }).filter((model) => (
+      providerId !== "qoder"
+      || !allModels.some((builtIn) => getRuntimeModelId(builtIn) === model.id)
+    ));
 
     return (
       <div className="flex flex-wrap gap-3">
@@ -1135,28 +1212,36 @@ export default function ProviderDetailPage() {
         ))}
 
         {displayModels.map((model) => {
-          const fullModel = `${providerStorageAlias}/${model.id}`;
-          const oldFormatModel = `${providerId}/${model.id}`;
+          const displayModelId = getDisplayedModelId(model);
+          const runtimeModelId = getRuntimeModelId(model);
+          const fullModel = `${providerStorageAlias}/${runtimeModelId}`;
+          const oldFormatModel = `${providerId}/${runtimeModelId}`;
           const existingAlias = Object.entries(modelAliases).find(
             ([, m]) => m === fullModel || m === oldFormatModel
           )?.[0];
+          const rowModel = {
+            ...model,
+            id: displayModelId,
+            name: providerId === "qoder" ? model.defaultPublicId : model.name,
+          };
           return (
             <ModelRow
-              key={model.id}
-              model={model}
-              fullModel={`${providerDisplayAlias}/${model.id}`}
+              key={providerId === "qoder" ? runtimeModelId : displayModelId}
+              model={rowModel}
+              fullModel={providerId === "qoder" ? displayModelId : `${providerDisplayAlias}/${displayModelId}`}
               alias={existingAlias}
               copied={copied}
               onCopy={copy}
-              onSetAlias={(alias) => handleSetAlias(model.id, alias, providerStorageAlias)}
+              onSetAlias={(alias) => handleSetAlias(runtimeModelId, alias, providerStorageAlias)}
               onDeleteAlias={() => handleDeleteAlias(existingAlias)}
-              testStatus={modelTestResults[model.id]}
-              onTest={connections.length > 0 || isFreeNoAuth ? () => handleTestModel(model.id) : undefined}
-              isTesting={testingModelIds.has(model.id)}
+              testStatus={modelTestResults[displayModelId]}
+              onTest={connections.length > 0 || isFreeNoAuth ? () => handleTestModel(displayModelId) : undefined}
+              isTesting={testingModelIds.has(displayModelId)}
               isFree={model.isFree}
-              onDisable={() => handleDisableModel(model.id)}
-              caps={getCaps(`${providerId}/${model.id}`)}
-              thinkingSuffix={resolveThinkingSuffix(model.id)}
+              onDisable={() => handleDisableModel(runtimeModelId)}
+              onEdit={providerId === "qoder" ? () => openEditQoderModel(model) : undefined}
+              caps={getCaps(`${providerId}/${runtimeModelId}`)}
+              thinkingSuffix={resolveThinkingSuffix(runtimeModelId)}
             />
           );
         })}
@@ -1224,13 +1309,13 @@ export default function ProviderDetailPage() {
             <div className="flex flex-wrap gap-2">
               {disabledDisplayModels.map((m) => (
                 <button
-                  key={m.id}
-                  onClick={() => handleEnableModel(m.id)}
+                  key={getRuntimeModelId(m)}
+                  onClick={() => handleEnableModel(getRuntimeModelId(m))}
                   className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-dashed border-black/10 dark:border-white/10 text-xs text-text-muted hover:text-primary hover:border-primary/40 hover:bg-primary/5 transition-colors"
                   title="Restore model"
                 >
                   <span className="material-symbols-outlined text-[13px]">add</span>
-                  {m.id}
+                  {getDisplayedModelId(m)}
                 </button>
               ))}
             </div>
@@ -1658,7 +1743,7 @@ export default function ProviderDetailPage() {
             const allIds = [
               ...models,
               ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id)),
-            ].filter((m) => { const k = getModelKind(m); return !k || k === "llm"; }).map((m) => m.id);
+            ].filter((m) => { const k = getModelKind(m); return !k || k === "llm"; }).map((m) => getRuntimeModelId(m));
             const activeIds = allIds.filter((id) => !disabledModelIds.includes(id));
             return (
               <div className="flex gap-2">
@@ -1685,6 +1770,40 @@ export default function ProviderDetailPage() {
       {bulkActionModal}
 
       {/* Modals */}
+      <Modal
+        isOpen={!!editingQoderModel}
+        onClose={closeEditQoderModel}
+        title={translate("Edit Qoder Model ID")}
+        footer={
+          <>
+            <Button variant="ghost" onClick={closeEditQoderModel} disabled={savingQoderPublicModel}>
+              {translate("Cancel")}
+            </Button>
+            <Button onClick={handleSaveQoderPublicModel} loading={savingQoderPublicModel}>
+              {savingQoderPublicModel ? translate("Saving...") : translate("Save")}
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          <Input
+            label={translate("Public Model ID")}
+            value={editingQoderPublicId}
+            onChange={(e) => setEditingQoderPublicId(e.target.value)}
+            error={qoderPublicModelError}
+            hint={translate("This is the model ID returned by /v1/models and used by clients.")}
+            required
+            autoFocus
+          />
+          <div className="flex flex-col gap-1.5">
+            <span className="text-sm font-medium text-text-main">{translate("Qoder Internal ID")}</span>
+            <code className="rounded bg-sidebar px-3 py-2 font-mono text-xs text-text-muted">
+              {editingQoderModel ? getQoderInternalModelId(editingQoderModel) : ""}
+            </code>
+          </div>
+        </div>
+      </Modal>
+
       {providerId === "kiro" ? (
         <KiroOAuthWrapper
           isOpen={showOAuthModal}

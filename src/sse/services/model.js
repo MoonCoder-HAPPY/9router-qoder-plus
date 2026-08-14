@@ -1,5 +1,6 @@
 // Re-export from open-sse with localDb integration
 import { getModelAliases, getComboByName, getProviderNodes } from "@/lib/localDb";
+import { resolveQoderPublicModelId } from "@/lib/qoder/publicModels.js";
 import { parseModel as parseModelCore, resolveModelAliasFromMap, getModelInfoCore } from "open-sse/services/model.js";
 import REGISTRY from "open-sse/providers/registry/index.js";
 
@@ -75,7 +76,16 @@ export async function getModelInfo(modelStr) {
     return { provider: null, model: parsed.model };
   }
 
-  return getModelInfoCore(modelStr, getModelAliases);
+  const aliases = await getModelAliases();
+  const resolvedAlias = resolveModelAliasFromMap(parsed.model, aliases);
+  if (resolvedAlias) return resolvedAlias;
+
+  const qoderInternalId = await resolveQoderPublicModelId(parsed.model);
+  if (qoderInternalId) {
+    return { provider: "qoder", model: qoderInternalId };
+  }
+
+  return getModelInfoCore(modelStr, aliases);
 }
 
 /**

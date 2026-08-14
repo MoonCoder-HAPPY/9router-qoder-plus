@@ -78,7 +78,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
   // noAuth providers — no credential needed
   if (NO_AUTH_PROVIDERS.has(provider)) {
     const result = await handleImageGenerationCore({
-      body,
+      body: { ...body, model: `${provider}/${model}` },
       modelInfo: { provider, model },
       credentials: null,
       binaryOutput,
@@ -113,7 +113,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
     const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
 
     const result = await handleImageGenerationCore({
-      body,
+      body: { ...body, model: `${provider}/${model}` },
       modelInfo: { provider, model },
       credentials: refreshedCredentials,
       streamToClient: wantsStream,

@@ -11,6 +11,7 @@ import { resolveQoderModels } from "open-sse/services/qoderModels.js";
 import { resolveGrokCliModels } from "open-sse/services/grokCliModels.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { resolveCursorModels } from "open-sse/services/cursorModels.js";
+import { decorateQoderModelsForPublic } from "@/lib/qoder/publicModels.js";
 
 const GEMINI_CLI_MODELS_URL = "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
 
@@ -365,12 +366,14 @@ const PROVIDER_MODELS_CONFIG = {
       try {
         const result = await resolveQoderModels(credentials, { forceRefresh: true });
         if (result?.models?.length) {
+          const publicModels = await decorateQoderModelsForPublic(result.models);
           return {
-            models: result.models.map((m) => ({
-              // Use the canonical "qoder/<key>" id so the dashboard
-              // surfaces the same identifier the chat router expects.
-              id: `qoder/${m.id}`,
+            models: publicModels.map((m) => ({
+              id: m.id,
               name: m.name,
+              internalId: m.internalId,
+              qoderInternalId: m.qoderInternalId,
+              defaultPublicId: m.defaultPublicId,
               contextLength: m.contextLength,
               isVL: m.isVL,
               isReasoning: m.isReasoning,
