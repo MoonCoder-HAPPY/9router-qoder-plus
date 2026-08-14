@@ -44,6 +44,8 @@ describe("/v1/models qoder public ids", () => {
   });
 
   it("returns qoder display names as public model ids", async () => {
+    const db = await import("@/lib/db/index.js");
+    await db.addCustomModel({ providerAlias: "qd", id: "qmodel_preview", type: "llm", name: "Removed Qoder Model" });
     const { buildModelsList } = await import("@/app/api/v1/models/route.js");
 
     const models = await buildModelsList(["llm"]);
@@ -56,6 +58,7 @@ describe("/v1/models qoder public ids", () => {
       original_price_factor: 0.8,
     });
     expect(models.some((m) => m.id === "qd/gm51model")).toBe(false);
+    expect(models.some((m) => m.id === "qd/qmodel_preview")).toBe(false);
   });
 
   it("returns saved qoder public model overrides", async () => {

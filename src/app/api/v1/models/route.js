@@ -357,6 +357,7 @@ export async function buildModelsList(kindFilter, options = {}) {
       let liveModelKindById = new Map();
       let liveCapabilitiesById = new Map();
       let publicModelByInternalId = new Map();
+      let usedLiveCatalog = false;
 
       let rawModelIds = hasExplicitEnabledModels
         ? Array.from(
@@ -387,6 +388,7 @@ export async function buildModelsList(kindFilter, options = {}) {
         try {
           const live = await liveResolver(conn);
           if (live?.models?.length) {
+            usedLiveCatalog = true;
             rawModelIds = live.models.map((m) => m.internalId || m.id);
             liveModelKindById = new Map(
               live.models
@@ -429,6 +431,7 @@ export async function buildModelsList(kindFilter, options = {}) {
       const customModelKindById = new Map();
       const customModelIds = customModels
         .filter((m) => {
+          if (providerId === "qoder" && usedLiveCatalog) return false;
           if (!m?.id) return false;
           const kind = getModelKind(m) || LLM_KIND;
           // imageToText custom models are vision-capable chat models: expose them
@@ -447,6 +450,7 @@ export async function buildModelsList(kindFilter, options = {}) {
 
       const aliasModelIds = Object.values(modelAliases || {})
         .filter((fullModel) => {
+          if (providerId === "qoder" && usedLiveCatalog) return false;
           if (typeof fullModel !== "string" || !fullModel.includes("/")) return false;
           return (
             fullModel.startsWith(`${outputAlias}/`) ||
