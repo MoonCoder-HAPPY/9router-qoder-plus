@@ -256,7 +256,7 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
                 </p>
               </div>
               {keyUsage?.enabled && (
-                <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 border-b border-border bg-surface px-3 py-3 text-center">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 border-b border-border bg-surface px-3 py-3 text-center">
                   <div className="rounded border border-border bg-surface-2 p-2">
                     <p className="text-xs text-text-muted">Used / Total</p>
                     <p className="text-sm font-semibold">
@@ -272,18 +272,6 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
                     <p className="text-sm font-semibold truncate" title={keyUsage.activeAccountName || "None"}>
                       {keyUsage.activeAccountName || "None"}
                     </p>
-                  </div>
-                  <div className="rounded border border-border bg-surface-2 p-2 flex items-center justify-center">
-                    <Button
-                      type="button"
-                      variant="danger"
-                      size="sm"
-                      icon="restart_alt"
-                      onClick={() => setConfirmResetUsage(true)}
-                      disabled={resettingUsage}
-                    >
-                      Reset usage
-                    </Button>
                   </div>
                 </div>
               )}
@@ -484,6 +472,18 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
         {error && <p className="text-sm text-red-500">{error}</p>}
 
         <div className="flex gap-2">
+          {form.enabled && keyUsage?.enabled && (
+            <Button
+              type="button"
+              variant="danger"
+              icon="restart_alt"
+              onClick={() => setConfirmResetUsage(true)}
+              disabled={resettingUsage || saving}
+              fullWidth
+            >
+              Reset usage
+            </Button>
+          )}
           <Button onClick={save} fullWidth disabled={saving || allocationTooHigh}>
             {saving ? "Saving..." : "Save"}
           </Button>
