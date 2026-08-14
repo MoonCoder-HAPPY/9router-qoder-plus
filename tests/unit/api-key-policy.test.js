@@ -7,6 +7,7 @@ import {
   getAccountAllocationLimit,
   getOrderedPolicyConnectionIds,
   getQoderCreditUsageSinceBaseline,
+  mergeQoderCreditUsageLedger,
   preserveQoderQuotaBaseline,
   shouldRefreshQoderQuotaBaseline,
   evaluateApiKeyProviderCreditUsage,
@@ -48,6 +49,7 @@ describe("api key policy", () => {
       metric: API_KEY_POLICY_LIMIT_METRIC.CREDITS,
       startedAt: null,
       quotaBaseline: {},
+      creditUsageLedger: {},
     });
   });
 
@@ -424,6 +426,116 @@ describe("api key policy", () => {
       limit: 19000,
       remaining: 17341,
       activeConnectionId: "second",
+    });
+  });
+
+  it("keeps Qoder key credit usage monotonic when current quota refills above the last consumed level", () => {
+    const policy = normalizeApiKeyPolicy({
+      enabled: true,
+      providers: {
+        qoder: {
+          connectionIds: ["first", "second"],
+          priorityOrder: ["first", "second"],
+          accountAllocations: { first: 6000, second: 8000 },
+          quotaBaseline: {
+            first: {
+              initialRemainingQuota: 6200,
+              capturedAt: "2026-08-11T03:24:01.885Z",
+              quotaRows: [
+                { name: "Personal", remaining: 3000, total: 3000 },
+                { name: "Resource Package", remaining: 3200, total: 3200 },
+              ],
+            },
+            second: {
+              initialRemainingQuota: 9000,
+              capturedAt: "2026-08-11T03:24:01.885Z",
+              quotaRows: [
+                { name: "Personal", remaining: 3000, total: 3000 },
+                { name: "Resource Package", remaining: 6000, total: 6000 },
+              ],
+            },
+          },
+          creditUsageLedger: {
+            first: { used: 5000, lastRemainingQuota: 1200, updatedAt: "2026-08-13T15:00:00.000Z" },
+          },
+        },
+      },
+    });
+
+    const currentRemainingByConnectionId = {
+      first: {
+        remaining: 6100,
+        quotaRows: [
+          { name: "Personal", remaining: 2900, total: 3000 },
+          { name: "Resource Package", remaining: 3200, total: 3200 },
+        ],
+      },
+      second: {
+        remaining: 9000,
+        quotaRows: [
+          { name: "Personal", remaining: 3000, total: 3000 },
+          { name: "Resource Package", remaining: 6000, total: 6000 },
+        ],
+      },
+    };
+
+    const ledger = mergeQoderCreditUsageLedger({
+      providerPolicy: policy.providers.qoder,
+      currentRemainingByConnectionId,
+      updatedAt: "2026-08-14T01:00:00.000Z",
+    });
+
+    expect(ledger.first.used).toBe(5000);
+    expect(ledger.first.lastRemainingQuota).toBe(6100);
+    expect(evaluateApiKeyProviderCreditUsage({
+      policy,
+      provider: "qoder",
+      currentRemainingByConnectionId,
+      creditUsageLedger: ledger,
+    })).toMatchObject({
+      allowed: true,
+      used: 5000,
+      limit: 14000,
+      remaining: 9000,
+      activeConnectionId: "first",
+    });
+  });
+
+  it("adds only the newly observed Qoder quota drop to persisted credit usage", () => {
+    const policy = normalizeApiKeyPolicy({
+      enabled: true,
+      providers: {
+        qoder: {
+          connectionIds: ["first"],
+          priorityOrder: ["first"],
+          accountAllocations: { first: 6000 },
+          quotaBaseline: {
+            first: { initialRemainingQuota: 6200, capturedAt: "2026-08-11T03:24:01.885Z" },
+          },
+          creditUsageLedger: {
+            first: { used: 5000, lastRemainingQuota: 1200, updatedAt: "2026-08-13T15:00:00.000Z" },
+          },
+        },
+      },
+    });
+
+    const ledger = mergeQoderCreditUsageLedger({
+      providerPolicy: policy.providers.qoder,
+      currentRemainingByConnectionId: { first: 1100 },
+      updatedAt: "2026-08-14T01:00:00.000Z",
+    });
+
+    expect(ledger.first.used).toBe(5100);
+    expect(evaluateApiKeyProviderCreditUsage({
+      policy,
+      provider: "qoder",
+      currentRemainingByConnectionId: { first: 1100 },
+      creditUsageLedger: ledger,
+    })).toMatchObject({
+      allowed: true,
+      used: 5100,
+      remaining: 900,
+      activeConnectionId: "first",
     });
   });
 

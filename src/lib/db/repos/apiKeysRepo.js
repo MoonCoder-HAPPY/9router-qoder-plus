@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { stringifyJson } from "../helpers/jsonCol.js";
-import { normalizeApiKeyPolicy } from "@/shared/services/apiKeyPolicy.js";
+import { mergeQoderCreditUsageLedger, normalizeApiKeyPolicy } from "@/shared/services/apiKeyPolicy.js";
 
 function rowToKey(row) {
   if (!row) return null;
@@ -76,6 +76,30 @@ export async function updateApiKey(id, data) {
       [merged.key, merged.name, merged.machineId, merged.isActive ? 1 : 0, stringifyJson(merged.policy), id]
     );
     result = merged;
+  });
+  return result;
+}
+
+export async function updateApiKeyQoderCreditUsageLedger(id, currentRemainingByConnectionId, updatedAt = new Date().toISOString()) {
+  const db = await getAdapter();
+  let result = null;
+  db.transaction(() => {
+    const row = db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]);
+    if (!row) return;
+    const apiKey = rowToKey(row);
+    const policy = normalizeApiKeyPolicy(apiKey.policy);
+    if (!policy.enabled || !policy.providers.qoder) return;
+    const ledger = mergeQoderCreditUsageLedger({
+      providerPolicy: policy.providers.qoder,
+      currentRemainingByConnectionId,
+      updatedAt,
+    });
+    policy.providers.qoder = {
+      ...policy.providers.qoder,
+      creditUsageLedger: ledger,
+    };
+    db.run(`UPDATE apiKeys SET policy = ? WHERE id = ?`, [stringifyJson(policy), id]);
+    result = rowToKey({ ...row, policy: stringifyJson(policy) });
   });
   return result;
 }

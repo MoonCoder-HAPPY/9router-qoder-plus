@@ -1,4 +1,4 @@
-import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings, getProxyPools, getApiKeyByValue, getApiKeyPolicyUsedTokens } from "@/lib/localDb";
+import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings, getProxyPools, getApiKeyByValue, getApiKeyPolicyUsedTokens, updateApiKeyQoderCreditUsageLedger } from "@/lib/localDb";
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
 import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
@@ -12,6 +12,7 @@ import {
   getOrderedPolicyConnectionIds,
   getPolicyConnectionIds,
   getProviderPolicy,
+  mergeQoderCreditUsageLedger,
   sumQoderRemainingQuota,
 } from "@/shared/services/apiKeyPolicy.js";
 import { notifyApiKeyQuotaExhausted, notifyApiKeyQuotaThresholdExceeded } from "@/shared/services/modelIdleAlert.js";
@@ -133,11 +134,21 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       if (providerId === "qoder" && providerPolicy.metric === API_KEY_POLICY_LIMIT_METRIC.CREDITS) {
         try {
           const remainingByConnectionId = await getQoderRemainingByConnectionId(policyFilteredConnections, connectionIds);
+          const creditUsageLedger = mergeQoderCreditUsageLedger({
+            providerPolicy,
+            currentRemainingByConnectionId: remainingByConnectionId,
+          });
           usageState = evaluateApiKeyProviderCreditUsage({
             policy: options?.apiKeyPolicy,
             provider: providerId,
             currentRemainingByConnectionId: remainingByConnectionId,
+            creditUsageLedger,
           });
+          if (options?.apiKeyRecord?.id) {
+            await updateApiKeyQoderCreditUsageLedger(options.apiKeyRecord.id, remainingByConnectionId).catch((error) => {
+              log.warn("AUTH", `${provider} | API key quota ledger update failed: ${error.message}`);
+            });
+          }
         } catch (error) {
           log.warn("AUTH", `${provider} | API key quota check skipped: ${error.message}`);
           usageState = { allowed: true };

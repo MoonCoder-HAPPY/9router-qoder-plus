@@ -16,6 +16,7 @@ vi.mock("@/lib/localDb", () => ({
   getSettings: vi.fn(async () => ({ fallbackStrategy: "fill-first" })),
   getProxyPools: vi.fn(async () => []),
   getApiKeyPolicyUsedTokens: vi.fn(async () => 0),
+  updateApiKeyQoderCreditUsageLedger: vi.fn(async () => null),
 }));
 
 vi.mock("open-sse/services/usage.js", () => ({

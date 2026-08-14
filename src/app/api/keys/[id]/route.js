@@ -59,6 +59,7 @@ export async function PUT(request, { params }) {
               ...normalizedPolicy.providers.qoder,
               startedAt: capturedAt,
               quotaBaseline: buildQoderQuotaBreakdownBaseline(accounts, qoderPolicy.connectionIds, capturedAt),
+              creditUsageLedger: {},
             };
           } else {
             normalizedPolicy.providers.qoder = preserveQoderQuotaBaseline(previousQoderPolicy, normalizedPolicy.providers.qoder);

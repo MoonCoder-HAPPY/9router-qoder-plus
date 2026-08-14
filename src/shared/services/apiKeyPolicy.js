@@ -47,6 +47,27 @@ function normalizeBaseline(value) {
   return result;
 }
 
+function normalizeCreditUsageLedger(value, connectionIds = []) {
+  const selected = new Set(connectionIds);
+  const result = {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) return result;
+  for (const [connectionId, raw] of Object.entries(value)) {
+    const id = typeof connectionId === "string" ? connectionId.trim() : "";
+    if (!id || (selected.size > 0 && !selected.has(id))) continue;
+    const used = Number(raw?.used);
+    const lastRemainingQuota = Number(raw?.lastRemainingQuota);
+    const entry = {
+      used: Number.isFinite(used) && used > 0 ? used : 0,
+    };
+    if (Number.isFinite(lastRemainingQuota) && lastRemainingQuota >= 0) {
+      entry.lastRemainingQuota = lastRemainingQuota;
+    }
+    if (typeof raw?.updatedAt === "string" && raw.updatedAt) entry.updatedAt = raw.updatedAt;
+    result[id] = entry;
+  }
+  return result;
+}
+
 function normalizeQuotaRows(value) {
   if (!Array.isArray(value)) return [];
   return value
@@ -110,6 +131,7 @@ export function normalizeApiKeyPolicy(input) {
       metric: providerId === "qoder" ? API_KEY_POLICY_LIMIT_METRIC.CREDITS : metric,
       startedAt: typeof raw.startedAt === "string" && raw.startedAt ? raw.startedAt : null,
       quotaBaseline: normalizeBaseline(raw.quotaBaseline),
+      creditUsageLedger: normalizeCreditUsageLedger(raw.creditUsageLedger, connectionIds),
     };
   }
 
@@ -173,7 +195,7 @@ export function evaluateApiKeyProviderUsage({ policy, provider, used }) {
   return { allowed: true, used: usedAmount, limit, remaining };
 }
 
-export function evaluateApiKeyProviderCreditUsage({ policy, provider, currentRemainingByConnectionId }) {
+export function evaluateApiKeyProviderCreditUsage({ policy, provider, currentRemainingByConnectionId, creditUsageLedger = null }) {
   const providerPolicy = getProviderPolicy(policy, provider);
   const limit = providerPolicy?.allocationLimit;
   if (limit === null || limit === undefined) {
@@ -182,6 +204,7 @@ export function evaluateApiKeyProviderCreditUsage({ policy, provider, currentRem
 
   const selectedConnectionIds = getOrderedPolicyConnectionIds(policy, provider);
   const baseline = providerPolicy.quotaBaseline || {};
+  const ledger = normalizeCreditUsageLedger(creditUsageLedger || providerPolicy.creditUsageLedger, selectedConnectionIds);
   let used = 0;
   const unavailableConnectionIds = [];
   let activeConnectionId = null;
@@ -196,9 +219,11 @@ export function evaluateApiKeyProviderCreditUsage({ policy, provider, currentRem
     }
     const accountLimit = getAccountAllocationLimit(providerPolicy, connectionId);
     const consumed = calculateQuotaConsumed(baseline[connectionId], currentState);
-    const countedConsumed = accountLimit > 0 ? Math.min(consumed, accountLimit) : 0;
+    const ledgerUsed = Number(ledger[connectionId]?.used);
+    const effectiveConsumed = Math.max(consumed, Number.isFinite(ledgerUsed) ? ledgerUsed : 0);
+    const countedConsumed = accountLimit > 0 ? Math.min(effectiveConsumed, accountLimit) : 0;
     used += countedConsumed;
-    if (current > 0 && consumed < accountLimit && !(consumed === 0 && hasQuotaGrownAboveBaseline(baseline[connectionId], currentState))) {
+    if (current > 0 && effectiveConsumed < accountLimit && !(effectiveConsumed === 0 && hasQuotaGrownAboveBaseline(baseline[connectionId], currentState))) {
       activeConnectionId = connectionId;
       break;
     }
@@ -210,6 +235,40 @@ export function evaluateApiKeyProviderCreditUsage({ policy, provider, currentRem
     return { allowed: false, reason: "quota_exhausted", used: usedAmount, limit, remaining, unavailableConnectionIds, activeConnectionId };
   }
   return { allowed: true, used: usedAmount, limit, remaining, unavailableConnectionIds, activeConnectionId };
+}
+
+export function mergeQoderCreditUsageLedger({ providerPolicy, currentRemainingByConnectionId, updatedAt = new Date().toISOString() }) {
+  const connectionIds = getOrderedPolicyConnectionIds({ enabled: true, providers: { qoder: providerPolicy } }, "qoder");
+  const previousLedger = normalizeCreditUsageLedger(providerPolicy?.creditUsageLedger, connectionIds);
+  const baseline = providerPolicy?.quotaBaseline || {};
+  const nextLedger = {};
+
+  for (const connectionId of connectionIds) {
+    const currentState = normalizeCurrentQuotaState(currentRemainingByConnectionId?.[connectionId]);
+    if (!Number.isFinite(currentState.remaining)) {
+      if (previousLedger[connectionId]) nextLedger[connectionId] = previousLedger[connectionId];
+      continue;
+    }
+    const previous = previousLedger[connectionId] || {};
+    const baselineConsumed = calculateQuotaConsumed(baseline[connectionId], currentState);
+    const previousUsed = Number(previous.used);
+    const previousUsedAmount = Number.isFinite(previousUsed) ? previousUsed : 0;
+
+    const lastRemaining = Number(previous.lastRemainingQuota);
+    let observedDrop = 0;
+    if (Number.isFinite(lastRemaining) && currentState.remaining < lastRemaining) {
+      observedDrop = lastRemaining - currentState.remaining;
+    }
+    const used = Math.max(0, previousUsedAmount, baselineConsumed, previousUsedAmount + observedDrop);
+
+    nextLedger[connectionId] = {
+      used,
+      lastRemainingQuota: currentState.remaining,
+      updatedAt,
+    };
+  }
+
+  return nextLedger;
 }
 
 function normalizeCurrentQuotaState(value) {
@@ -313,6 +372,7 @@ export function preserveQoderQuotaBaseline(previousProviderPolicy, nextProviderP
     ...nextProviderPolicy,
     startedAt: previousProviderPolicy?.startedAt || nextProviderPolicy.startedAt || null,
     quotaBaseline: previousProviderPolicy?.quotaBaseline || nextProviderPolicy.quotaBaseline || {},
+    creditUsageLedger: previousProviderPolicy?.creditUsageLedger || nextProviderPolicy.creditUsageLedger || {},
   };
 }
 

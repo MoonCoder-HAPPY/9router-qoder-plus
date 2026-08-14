@@ -122,6 +122,49 @@ describe("api key policy db integration", () => {
     })).toBe(150);
   });
 
+  it("persists Qoder credit usage ledger on the selected API key policy", async () => {
+    const key = await db.createApiKey("tenant-a", "machine-a");
+    await db.updateApiKey(key.id, {
+      policy: {
+        enabled: true,
+        providers: {
+          qoder: {
+            connectionIds: ["conn-a"],
+            priorityOrder: ["conn-a"],
+            accountAllocations: { "conn-a": 6000 },
+            quotaBaseline: {
+              "conn-a": { initialRemainingQuota: 6200, capturedAt: "2026-08-11T03:24:01.885Z" },
+            },
+          },
+        },
+      },
+    });
+
+    const saved = await db.getApiKeyByValue(key.key);
+    await db.updateApiKey(key.id, {
+      policy: {
+        ...saved.policy,
+        providers: {
+          qoder: {
+            ...saved.policy.providers.qoder,
+            creditUsageLedger: {
+              "conn-a": { used: 5000, lastRemainingQuota: 1200, updatedAt: "2026-08-13T15:00:00.000Z" },
+            },
+          },
+        },
+      },
+    });
+
+    await db.updateApiKeyQoderCreditUsageLedger(key.id, {
+      "conn-a": 6100,
+    }, "2026-08-14T01:00:00.000Z");
+
+    const updated = await db.getApiKeyByValue(key.key);
+    expect(updated.policy.providers.qoder.creditUsageLedger).toEqual({
+      "conn-a": { used: 5000, lastRemainingQuota: 6100, updatedAt: "2026-08-14T01:00:00.000Z" },
+    });
+  });
+
   it("lists other key policies for allocation validation", async () => {
     const first = await db.createApiKey("first", "machine-a");
     const second = await db.createApiKey("second", "machine-a");

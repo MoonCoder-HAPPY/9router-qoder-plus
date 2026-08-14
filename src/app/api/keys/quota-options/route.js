@@ -8,6 +8,7 @@ import {
   evaluateApiKeyProviderCreditUsage,
   getAccountAllocationLimit,
   getProviderPolicy,
+  mergeQoderCreditUsageLedger,
   sumQoderRemainingQuota,
 } from "@/shared/services/apiKeyPolicy.js";
 import { getUsageForProvider } from "open-sse/services/usage.js";
@@ -52,6 +53,10 @@ export function buildQoderKeyUsageState(policy, accounts) {
     policy,
     provider: "qoder",
     currentRemainingByConnectionId,
+    creditUsageLedger: mergeQoderCreditUsageLedger({
+      providerPolicy: qoderPolicy,
+      currentRemainingByConnectionId,
+    }),
   });
   const activeAccount = usageState.activeConnectionId ? accountMap.get(usageState.activeConnectionId) : null;
   return {
