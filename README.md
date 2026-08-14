@@ -128,19 +128,6 @@ _钉钉告警设置支持空闲阈值、告警冷却、Webhook、加签 Secret �
 - `Alert Cooldown` 填 `0` 表示不额外冷却。
 - 页面提供 `Test DingTalk` 按钮，可保存配置后立即发送测试消息。
 
-### 开源安全调整
-
-为了满足 GitHub Push Protection，本仓库不内置 Google OAuth client id/secret。相关值改为环境变量读取：
-
-| 环境变量 | 说明 |
-| --- | --- |
-| `GOOGLE_OAUTH_CLIENT_ID` | Gemini/Gemini CLI OAuth client id |
-| `GOOGLE_OAUTH_CLIENT_SECRET` | Gemini/Gemini CLI OAuth client secret |
-| `ANTIGRAVITY_GOOGLE_CLIENT_ID` | Antigravity OAuth client id |
-| `ANTIGRAVITY_GOOGLE_CLIENT_SECRET` | Antigravity OAuth client secret |
-
-如果你只使用 Qoder，这些变量可以不配置。
-
 ## Docker 部署
 
 ### 方式一：本地构建镜像
