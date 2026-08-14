@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import PropTypes from "prop-types";
-import { Button, Input, Modal, Toggle } from "@/shared/components";
+import { Button, ConfirmModal, Input, Modal, Toggle } from "@/shared/components";
 import { translate } from "@/i18n/runtime";
 
 function normalizeEditablePolicy(policy) {
@@ -42,8 +42,11 @@ function getExistingConsumedByAccount(policy, accountId, remainingQuota) {
   if (!qoder?.connectionIds?.includes(accountId)) return 0;
   const initial = Number(qoder.quotaBaseline?.[accountId]?.initialRemainingQuota);
   const current = Number(remainingQuota);
-  if (!Number.isFinite(initial) || !Number.isFinite(current)) return 0;
-  return Math.max(0, initial - current);
+  const baselineConsumed = Number.isFinite(initial) && Number.isFinite(current)
+    ? Math.max(0, initial - current)
+    : 0;
+  const ledgerUsed = Number(qoder.creditUsageLedger?.[accountId]?.used);
+  return Math.max(baselineConsumed, Number.isFinite(ledgerUsed) ? ledgerUsed : 0);
 }
 
 function sortSelectedByAccountList(selectedIds, accounts) {
@@ -58,6 +61,8 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
   const [quotaOptions, setQuotaOptions] = useState(null);
   const [loadingOptions, setLoadingOptions] = useState(() => isOpen && !!apiKeyItem);
   const [saving, setSaving] = useState(false);
+  const [resettingUsage, setResettingUsage] = useState(false);
+  const [confirmResetUsage, setConfirmResetUsage] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -185,9 +190,27 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
     }
   }
 
+  async function resetUsage() {
+    if (!apiKeyItem) return;
+    setResettingUsage(true);
+    setError("");
+    try {
+      const res = await fetch(`/api/keys/${apiKeyItem.id}/qoder-usage/reset`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to reset Qoder usage");
+      setConfirmResetUsage(false);
+      onSaved(data.key);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setResettingUsage(false);
+    }
+  }
+
   return (
-    <Modal isOpen={isOpen} title={translate("API Key Restrictions")} onClose={onClose} size="lg">
-      <div className="flex flex-col gap-4">
+    <>
+      <Modal isOpen={isOpen} title={translate("API Key Restrictions")} onClose={onClose} size="lg">
+        <div className="flex flex-col gap-4">
         <div className="flex items-center justify-between gap-3">
           <div>
             <p className="text-sm font-medium">Enable restrictions</p>
@@ -213,7 +236,7 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
                 </p>
               </div>
               {keyUsage?.enabled && (
-                <div className="grid grid-cols-3 gap-2 border-b border-border bg-surface px-3 py-3 text-center">
+                <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 border-b border-border bg-surface px-3 py-3 text-center">
                   <div className="rounded border border-border bg-surface-2 p-2">
                     <p className="text-xs text-text-muted">Used / Total</p>
                     <p className="text-sm font-semibold">
@@ -229,6 +252,18 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
                     <p className="text-sm font-semibold truncate" title={keyUsage.activeAccountName || "None"}>
                       {keyUsage.activeAccountName || "None"}
                     </p>
+                  </div>
+                  <div className="rounded border border-border bg-surface-2 p-2 flex items-center justify-center">
+                    <Button
+                      type="button"
+                      variant="danger"
+                      size="sm"
+                      icon="restart_alt"
+                      onClick={() => setConfirmResetUsage(true)}
+                      disabled={resettingUsage}
+                    >
+                      Reset usage
+                    </Button>
                   </div>
                 </div>
               )}
@@ -397,8 +432,20 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
             Cancel
           </Button>
         </div>
-      </div>
-    </Modal>
+        </div>
+      </Modal>
+      <ConfirmModal
+        isOpen={confirmResetUsage}
+        onClose={() => !resettingUsage && setConfirmResetUsage(false)}
+        onConfirm={resetUsage}
+        title="Reset Qoder Usage"
+        message="Reset this key's recorded Qoder usage to 0 and start counting again from the current account quotas? This cannot be undone."
+        confirmText="Reset usage"
+        cancelText="Cancel"
+        variant="danger"
+        loading={resettingUsage}
+      />
+    </>
   );
 }
 

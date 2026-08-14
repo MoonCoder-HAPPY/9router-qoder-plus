@@ -48,12 +48,12 @@ function normalizeBaseline(value) {
 }
 
 function normalizeCreditUsageLedger(value, connectionIds = []) {
-  const selected = new Set(connectionIds);
+  const selected = connectionIds === null ? null : new Set(connectionIds);
   const result = {};
   if (!value || typeof value !== "object" || Array.isArray(value)) return result;
   for (const [connectionId, raw] of Object.entries(value)) {
     const id = typeof connectionId === "string" ? connectionId.trim() : "";
-    if (!id || (selected.size > 0 && !selected.has(id))) continue;
+    if (!id || (selected && selected.size > 0 && !selected.has(id))) continue;
     const used = Number(raw?.used);
     const lastRemainingQuota = Number(raw?.lastRemainingQuota);
     const entry = {
@@ -131,7 +131,7 @@ export function normalizeApiKeyPolicy(input) {
       metric: providerId === "qoder" ? API_KEY_POLICY_LIMIT_METRIC.CREDITS : metric,
       startedAt: typeof raw.startedAt === "string" && raw.startedAt ? raw.startedAt : null,
       quotaBaseline: normalizeBaseline(raw.quotaBaseline),
-      creditUsageLedger: normalizeCreditUsageLedger(raw.creditUsageLedger, connectionIds),
+      creditUsageLedger: normalizeCreditUsageLedger(raw.creditUsageLedger, null),
     };
   }
 
@@ -195,7 +195,7 @@ export function evaluateApiKeyProviderUsage({ policy, provider, used }) {
   return { allowed: true, used: usedAmount, limit, remaining };
 }
 
-export function evaluateApiKeyProviderCreditUsage({ policy, provider, currentRemainingByConnectionId, creditUsageLedger = null }) {
+export function evaluateApiKeyProviderCreditUsage({ policy, provider, currentRemainingByConnectionId, creditUsageLedger = null, useBaselineFallback = true }) {
   const providerPolicy = getProviderPolicy(policy, provider);
   const limit = providerPolicy?.allocationLimit;
   if (limit === null || limit === undefined) {
@@ -218,7 +218,7 @@ export function evaluateApiKeyProviderCreditUsage({ policy, provider, currentRem
       continue;
     }
     const accountLimit = getAccountAllocationLimit(providerPolicy, connectionId);
-    const consumed = calculateQuotaConsumed(baseline[connectionId], currentState);
+    const consumed = useBaselineFallback ? calculateQuotaConsumed(baseline[connectionId], currentState) : 0;
     const ledgerUsed = Number(ledger[connectionId]?.used);
     const effectiveConsumed = Math.max(consumed, Number.isFinite(ledgerUsed) ? ledgerUsed : 0);
     const countedConsumed = accountLimit > 0 ? Math.min(effectiveConsumed, accountLimit) : 0;
@@ -250,9 +250,10 @@ export function mergeQoderCreditUsageLedger({ providerPolicy, currentRemainingBy
       continue;
     }
     const previous = previousLedger[connectionId] || {};
-    const baselineConsumed = calculateQuotaConsumed(baseline[connectionId], currentState);
     const previousUsed = Number(previous.used);
     const previousUsedAmount = Number.isFinite(previousUsed) ? previousUsed : 0;
+    const hasPreviousCheckpoint = Number.isFinite(Number(previous.lastRemainingQuota));
+    const baselineConsumed = hasPreviousCheckpoint ? 0 : calculateQuotaConsumed(baseline[connectionId], currentState);
 
     const lastRemaining = Number(previous.lastRemainingQuota);
     let observedDrop = 0;
@@ -351,18 +352,17 @@ export function getQoderCreditUsageSinceBaseline(providerPolicy, currentRemainin
   return used;
 }
 
+export function getQoderPersistedCreditUsage(providerPolicy, connectionId) {
+  const used = Number(providerPolicy?.creditUsageLedger?.[connectionId]?.used);
+  return Number.isFinite(used) && used > 0 ? used : 0;
+}
+
 export function shouldRefreshQoderQuotaBaseline(previousProviderPolicy, nextProviderPolicy) {
   if (!nextProviderPolicy) return false;
   if (!previousProviderPolicy) return true;
   const previousIds = normalizeConnectionIds(previousProviderPolicy.connectionIds).sort();
   const nextIds = normalizeConnectionIds(nextProviderPolicy.connectionIds).sort();
   if (previousIds.length !== nextIds.length || previousIds.some((id, index) => id !== nextIds[index])) return true;
-  const allIds = new Set([...previousIds, ...nextIds]);
-  for (const id of allIds) {
-    if (getAccountAllocationLimit(previousProviderPolicy, id) !== getAccountAllocationLimit(nextProviderPolicy, id)) {
-      return true;
-    }
-  }
   return false;
 }
 
@@ -374,6 +374,11 @@ export function preserveQoderQuotaBaseline(previousProviderPolicy, nextProviderP
     quotaBaseline: previousProviderPolicy?.quotaBaseline || nextProviderPolicy.quotaBaseline || {},
     creditUsageLedger: previousProviderPolicy?.creditUsageLedger || nextProviderPolicy.creditUsageLedger || {},
   };
+}
+
+export function preserveQoderCreditUsageLedger(previousProviderPolicy, nextProviderPolicy) {
+  if (!nextProviderPolicy) return {};
+  return normalizeCreditUsageLedger(previousProviderPolicy?.creditUsageLedger, null);
 }
 
 export function sumQoderRemainingQuota(usage) {

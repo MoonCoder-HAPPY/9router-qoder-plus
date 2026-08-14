@@ -7,8 +7,8 @@ import {
   calculateAllowedAllocation,
   evaluateApiKeyProviderCreditUsage,
   getAccountAllocationLimit,
+  getQoderPersistedCreditUsage,
   getProviderPolicy,
-  mergeQoderCreditUsageLedger,
   sumQoderRemainingQuota,
 } from "@/shared/services/apiKeyPolicy.js";
 import { getUsageForProvider } from "open-sse/services/usage.js";
@@ -53,10 +53,7 @@ export function buildQoderKeyUsageState(policy, accounts) {
     policy,
     provider: "qoder",
     currentRemainingByConnectionId,
-    creditUsageLedger: mergeQoderCreditUsageLedger({
-      providerPolicy: qoderPolicy,
-      currentRemainingByConnectionId,
-    }),
+    useBaselineFallback: false,
   });
   const activeAccount = usageState.activeConnectionId ? accountMap.get(usageState.activeConnectionId) : null;
   return {
@@ -155,8 +152,11 @@ export function validateQoderPolicyAllocation(policy, quotaOptions, otherPolicie
       if (!existingQoderPolicy.connectionIds?.includes(connectionId)) continue;
       const initial = Number(existingQoderPolicy.quotaBaseline?.[connectionId]?.initialRemainingQuota);
       const current = Number(accountRemainingById[connectionId]);
-      if (!Number.isFinite(initial) || !Number.isFinite(current)) continue;
-      accountRemainingById[connectionId] = current + Math.max(0, initial - current);
+      const baselineConsumed = Number.isFinite(initial) && Number.isFinite(current)
+        ? Math.max(0, initial - current)
+        : 0;
+      const persistedConsumed = getQoderPersistedCreditUsage(existingQoderPolicy, connectionId);
+      accountRemainingById[connectionId] = current + Math.max(baselineConsumed, persistedConsumed);
     }
   }
   const selectedConnectionIds = qoderPolicy.connectionIds;

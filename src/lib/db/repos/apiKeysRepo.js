@@ -104,6 +104,27 @@ export async function updateApiKeyQoderCreditUsageLedger(id, currentRemainingByC
   return result;
 }
 
+export async function resetApiKeyQoderCreditUsage(id, quotaBaseline, resetAt = new Date().toISOString()) {
+  const db = await getAdapter();
+  let result = null;
+  db.transaction(() => {
+    const row = db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]);
+    if (!row) return;
+    const apiKey = rowToKey(row);
+    const policy = normalizeApiKeyPolicy(apiKey.policy);
+    if (!policy.enabled || !policy.providers.qoder) return;
+    policy.providers.qoder = {
+      ...policy.providers.qoder,
+      startedAt: resetAt,
+      quotaBaseline: quotaBaseline && typeof quotaBaseline === "object" && !Array.isArray(quotaBaseline) ? quotaBaseline : {},
+      creditUsageLedger: {},
+    };
+    db.run(`UPDATE apiKeys SET policy = ? WHERE id = ?`, [stringifyJson(policy), id]);
+    result = rowToKey({ ...row, policy: stringifyJson(policy) });
+  });
+  return result;
+}
+
 export async function deleteApiKey(id) {
   const db = await getAdapter();
   const res = db.run(`DELETE FROM apiKeys WHERE id = ?`, [id]);

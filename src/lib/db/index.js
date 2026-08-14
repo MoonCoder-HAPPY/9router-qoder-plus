@@ -31,7 +31,7 @@ export {
 export {
   getApiKeys, getApiKeyById, getApiKeyByValue,
   createApiKey, updateApiKey, deleteApiKey, validateApiKey,
-  getOtherApiKeyPolicies, updateApiKeyQoderCreditUsageLedger,
+  getOtherApiKeyPolicies, updateApiKeyQoderCreditUsageLedger, resetApiKeyQoderCreditUsage,
 } from "./repos/apiKeysRepo.js";
 
 // Combos

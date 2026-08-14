@@ -4,6 +4,7 @@ import {
   buildQoderQuotaBreakdownBaseline,
   getProviderPolicy,
   normalizeApiKeyPolicy,
+  preserveQoderCreditUsageLedger,
   preserveQoderQuotaBaseline,
   shouldRefreshQoderQuotaBaseline,
 } from "@/shared/services/apiKeyPolicy.js";
@@ -59,7 +60,7 @@ export async function PUT(request, { params }) {
               ...normalizedPolicy.providers.qoder,
               startedAt: capturedAt,
               quotaBaseline: buildQoderQuotaBreakdownBaseline(accounts, qoderPolicy.connectionIds, capturedAt),
-              creditUsageLedger: {},
+              creditUsageLedger: preserveQoderCreditUsageLedger(previousQoderPolicy, qoderPolicy),
             };
           } else {
             normalizedPolicy.providers.qoder = preserveQoderQuotaBaseline(previousQoderPolicy, normalizedPolicy.providers.qoder);

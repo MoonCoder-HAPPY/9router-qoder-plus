@@ -8,6 +8,7 @@ import {
   getOrderedPolicyConnectionIds,
   getQoderCreditUsageSinceBaseline,
   mergeQoderCreditUsageLedger,
+  preserveQoderCreditUsageLedger,
   preserveQoderQuotaBaseline,
   shouldRefreshQoderQuotaBaseline,
   evaluateApiKeyProviderCreditUsage,
@@ -251,6 +252,9 @@ describe("api key policy", () => {
             a: { initialRemainingQuota: 13357, capturedAt: "2026-08-04T10:44:50.276Z" },
             b: { initialRemainingQuota: 182022, capturedAt: "2026-08-04T10:44:50.276Z" },
             c: { initialRemainingQuota: 5555, capturedAt: "2026-08-04T10:44:50.276Z" },
+          },
+          creditUsageLedger: {
+            a: { used: 4894, lastRemainingQuota: 8463, updatedAt: "2026-08-14T02:00:00.000Z" },
           },
         },
       },
@@ -539,6 +543,33 @@ describe("api key policy", () => {
     });
   });
 
+  it("does not recompute persisted Qoder usage from baseline after a checkpoint exists", () => {
+    const policy = normalizeApiKeyPolicy({
+      enabled: true,
+      providers: {
+        qoder: {
+          connectionIds: ["first"],
+          priorityOrder: ["first"],
+          accountAllocations: { first: 6000 },
+          quotaBaseline: {
+            first: { initialRemainingQuota: 10000, capturedAt: "2026-08-11T03:24:01.885Z" },
+          },
+          creditUsageLedger: {
+            first: { used: 1200, lastRemainingQuota: 9000, updatedAt: "2026-08-13T15:00:00.000Z" },
+          },
+        },
+      },
+    });
+
+    const ledger = mergeQoderCreditUsageLedger({
+      providerPolicy: policy.providers.qoder,
+      currentRemainingByConnectionId: { first: 8000 },
+      updatedAt: "2026-08-14T01:00:00.000Z",
+    });
+
+    expect(ledger.first.used).toBe(2200);
+  });
+
   it("keeps the first priority account active when it has no usage and no quota growth", () => {
     const policy = normalizeApiKeyPolicy({
       enabled: true,
@@ -661,6 +692,44 @@ describe("api key policy", () => {
       priorityOrder: ["b", "a"],
       startedAt: "2026-07-28T03:22:35.521Z",
       quotaBaseline: previous.quotaBaseline,
+    });
+  });
+
+  it("keeps Qoder quota baseline and usage ledger when account allocation changes", () => {
+    const previous = normalizeApiKeyPolicy({
+      enabled: true,
+      providers: {
+        qoder: {
+          connectionIds: ["a"],
+          priorityOrder: ["a"],
+          accountAllocations: { a: 5000 },
+          startedAt: "2026-07-28T03:22:35.521Z",
+          quotaBaseline: {
+            a: { initialRemainingQuota: 8000, capturedAt: "2026-07-28T03:22:35.521Z" },
+          },
+          creditUsageLedger: {
+            a: { used: 3200, lastRemainingQuota: 4800, updatedAt: "2026-08-14T01:00:00.000Z" },
+          },
+        },
+      },
+    }).providers.qoder;
+    const next = normalizeApiKeyPolicy({
+      enabled: true,
+      providers: {
+        qoder: {
+          connectionIds: ["a"],
+          priorityOrder: ["a"],
+          accountAllocations: { a: 6000 },
+        },
+      },
+    }).providers.qoder;
+
+    expect(shouldRefreshQoderQuotaBaseline(previous, next)).toBe(false);
+    expect(preserveQoderQuotaBaseline(previous, next)).toMatchObject({
+      accountAllocations: { a: 6000 },
+      allocationLimit: 6000,
+      quotaBaseline: previous.quotaBaseline,
+      creditUsageLedger: previous.creditUsageLedger,
     });
   });
 
@@ -800,6 +869,9 @@ describe("api key policy", () => {
           quotaBaseline: {
             a: { initialRemainingQuota: 10000, capturedAt: "2026-08-11T03:24:01.885Z" },
           },
+          creditUsageLedger: {
+            a: { used: 1235, lastRemainingQuota: 8765, updatedAt: "2026-08-14T02:00:00.000Z" },
+          },
         },
       },
     });
@@ -846,5 +918,34 @@ describe("api key policy", () => {
       ok: true,
       allocation: { selectedPool: 4092, allocatedToOtherKeys: 0, maxAssignable: 4092 },
     });
+  });
+
+  it("keeps persisted Qoder usage for unselected accounts across policy saves", () => {
+    const previous = normalizeApiKeyPolicy({
+      enabled: true,
+      providers: {
+        qoder: {
+          connectionIds: ["a", "b"],
+          priorityOrder: ["a", "b"],
+          accountAllocations: { a: 5000, b: 6000 },
+          creditUsageLedger: {
+            a: { used: 3200, lastRemainingQuota: 4800, updatedAt: "2026-08-14T01:00:00.000Z" },
+            b: { used: 900, lastRemainingQuota: 7100, updatedAt: "2026-08-14T01:00:00.000Z" },
+          },
+        },
+      },
+    }).providers.qoder;
+    const next = normalizeApiKeyPolicy({
+      enabled: true,
+      providers: {
+        qoder: {
+          connectionIds: ["b"],
+          priorityOrder: ["b"],
+          accountAllocations: { b: 6000 },
+        },
+      },
+    }).providers.qoder;
+
+    expect(preserveQoderCreditUsageLedger(previous, next)).toEqual(previous.creditUsageLedger);
   });
 });
