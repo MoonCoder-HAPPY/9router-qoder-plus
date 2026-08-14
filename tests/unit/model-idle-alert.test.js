@@ -1,14 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   buildApiKeyQuotaExhaustedText,
   buildApiKeyQuotaThresholdText,
+  clearApiKeyQuotaAlertStateForKey,
   createModelIdleAlertState,
   createApiKeyQuotaAlertState,
   evaluateModelIdleAlert,
   evaluateApiKeyQuotaAlert,
   evaluateApiKeyQuotaThresholdAlert,
+  markApiKeyQuotaAvailable,
   normalizeModelIdleAlertSettings,
+  notifyApiKeyQuotaExhausted,
   recordModelCall,
 } from "../../src/shared/services/modelIdleAlert.js";
 
@@ -76,7 +79,7 @@ describe("model idle alert state", () => {
 });
 
 describe("api key quota alert state", () => {
-  it("alerts once for an exhausted key and honors the alert cooldown", () => {
+  it("alerts once per exhausted key episode until the key becomes available again", () => {
     const settings = normalizeModelIdleAlertSettings({
       enabled: true,
       cooldownMinutes: 10,
@@ -91,19 +94,64 @@ describe("api key quota alert state", () => {
     });
 
     state.lastAlertByKey.set("key-a", firstAt);
+    state.activeExhaustedKeys.add("key-a");
 
     expect(evaluateApiKeyQuotaAlert(state, settings, "key-a", firstAt + 5 * MINUTE)).toMatchObject({
       shouldAlert: false,
-      reason: "cooldown",
+      reason: "already-alerted",
     });
     expect(evaluateApiKeyQuotaAlert(state, settings, "key-b", firstAt + 5 * MINUTE)).toMatchObject({
       shouldAlert: true,
       reason: "quota-exhausted",
     });
     expect(evaluateApiKeyQuotaAlert(state, settings, "key-a", firstAt + 10 * MINUTE)).toMatchObject({
+      shouldAlert: false,
+      reason: "already-alerted",
+    });
+
+    markApiKeyQuotaAvailable(state, "key-a");
+
+    expect(evaluateApiKeyQuotaAlert(state, settings, "key-a", firstAt + 6 * MINUTE)).toMatchObject({
       shouldAlert: true,
       reason: "quota-exhausted",
     });
+  });
+
+  it("clears exhausted and threshold alert state when key usage is explicitly reset", () => {
+    const state = createApiKeyQuotaAlertState();
+    state.lastAlertByKey.set("key-a", 1000);
+    state.lastThresholdAlertByKey.set("key-a", 1000);
+    state.activeExhaustedKeys.add("key-a");
+
+    clearApiKeyQuotaAlertStateForKey(state, "key-a");
+
+    expect(state.lastAlertByKey.has("key-a")).toBe(false);
+    expect(state.lastThresholdAlertByKey.has("key-a")).toBe(false);
+    expect(state.activeExhaustedKeys.has("key-a")).toBe(false);
+  });
+
+  it("suppresses concurrent exhausted notifications while the first DingTalk send is in flight", async () => {
+    global.__modelIdleAlert.settings = normalizeModelIdleAlertSettings({
+      enabled: true,
+      cooldownMinutes: 10,
+      dingtalkWebhook: "https://oapi.dingtalk.com/robot/send?access_token=test",
+    });
+    global.__modelIdleAlert.apiKeyQuotaState = createApiKeyQuotaAlertState();
+    let resolveFetch;
+    const fetchImpl = vi.fn(() => new Promise((resolve) => {
+      resolveFetch = () => resolve({
+        ok: true,
+        text: async () => JSON.stringify({ errcode: 0 }),
+      });
+    }));
+
+    const first = notifyApiKeyQuotaExhausted({ keyId: "key-a", keyName: "desktop", provider: "qoder" }, 1000, fetchImpl);
+    const second = await notifyApiKeyQuotaExhausted({ keyId: "key-a", keyName: "desktop", provider: "qoder" }, 1001, fetchImpl);
+    resolveFetch();
+    await first;
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(second).toMatchObject({ shouldAlert: false, reason: "already-alerted" });
   });
 
   it("builds a DingTalk message without exposing the raw API key", () => {

@@ -15,7 +15,7 @@ import {
   mergeQoderCreditUsageLedger,
   sumQoderRemainingQuota,
 } from "@/shared/services/apiKeyPolicy.js";
-import { notifyApiKeyQuotaExhausted, notifyApiKeyQuotaThresholdExceeded } from "@/shared/services/modelIdleAlert.js";
+import { markApiKeyQuotaRecovered, notifyApiKeyQuotaExhausted, notifyApiKeyQuotaThresholdExceeded } from "@/shared/services/modelIdleAlert.js";
 import * as log from "../utils/logger.js";
 
 // Mutex to prevent race conditions during account selection
@@ -186,6 +186,11 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           limit: usageState.limit,
           remaining: usageState.remaining,
         };
+      }
+      if (Number.isFinite(Number(usageState.used)) && Number.isFinite(Number(usageState.limit))) {
+        markApiKeyQuotaRecovered(options?.apiKeyRecord?.id || "unknown").catch((error) => {
+          log.warn("AUTH", `${provider} | API key quota alert recovery failed: ${error.message}`);
+        });
       }
       notifyApiKeyQuotaThresholdExceeded({
         keyId: options?.apiKeyRecord?.id || "unknown",

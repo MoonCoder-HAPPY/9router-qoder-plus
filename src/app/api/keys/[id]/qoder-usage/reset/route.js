@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getApiKeyById, resetApiKeyQoderCreditUsage } from "@/lib/localDb";
 import { buildQoderQuotaBreakdownBaseline, getProviderPolicy } from "@/shared/services/apiKeyPolicy.js";
+import { resetApiKeyQuotaAlertState } from "@/shared/services/modelIdleAlert.js";
 import { buildQoderQuotaOptions } from "../../../quota-options/route.js";
 
 export const dynamic = "force-dynamic";
@@ -26,6 +27,7 @@ export async function POST(request, { params }) {
       buildQoderQuotaBreakdownBaseline(accounts, qoderPolicy.connectionIds, resetAt),
       resetAt
     );
+    await resetApiKeyQuotaAlertState(id);
 
     return NextResponse.json({ key: updated });
   } catch (error) {

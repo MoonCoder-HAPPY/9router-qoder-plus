@@ -27,6 +27,7 @@ export function createApiKeyQuotaAlertState(initial = {}) {
   return {
     lastAlertByKey: initial.lastAlertByKey instanceof Map ? new Map(initial.lastAlertByKey) : new Map(),
     lastThresholdAlertByKey: initial.lastThresholdAlertByKey instanceof Map ? new Map(initial.lastThresholdAlertByKey) : new Map(),
+    activeExhaustedKeys: initial.activeExhaustedKeys instanceof Set ? new Set(initial.activeExhaustedKeys) : new Set(),
   };
 }
 
@@ -113,6 +114,9 @@ export function evaluateApiKeyQuotaAlert(state, settings, keyId, nowMs = Date.no
   if (!keyId) return { shouldAlert: false, reason: "missing-key", nowMs };
 
   const lastAlertAt = state?.lastAlertByKey?.get(keyId) || null;
+  if (state?.activeExhaustedKeys?.has(keyId)) {
+    return { shouldAlert: false, reason: "already-alerted", nowMs, lastAlertAt };
+  }
   if (
     lastAlertAt &&
     normalized.cooldownMinutes > 0 &&
@@ -122,6 +126,19 @@ export function evaluateApiKeyQuotaAlert(state, settings, keyId, nowMs = Date.no
   }
 
   return { shouldAlert: true, reason: "quota-exhausted", nowMs, lastAlertAt };
+}
+
+export function markApiKeyQuotaAvailable(state, keyId) {
+  if (!state || !keyId) return;
+  state.activeExhaustedKeys?.delete(keyId);
+  state.lastAlertByKey?.delete(keyId);
+}
+
+export function clearApiKeyQuotaAlertStateForKey(state, keyId) {
+  if (!state || !keyId) return;
+  state.activeExhaustedKeys?.delete(keyId);
+  state.lastAlertByKey?.delete(keyId);
+  state.lastThresholdAlertByKey?.delete(keyId);
 }
 
 export function evaluateApiKeyQuotaThresholdAlert(state, settings, details = {}, nowMs = Date.now()) {
@@ -316,11 +333,30 @@ export async function notifyApiKeyQuotaExhausted(details = {}, nowMs = Date.now(
   const result = evaluateApiKeyQuotaAlert(g.apiKeyQuotaState, g.settings, keyId, nowMs);
   if (!result.shouldAlert) return result;
 
+  if (!g.apiKeyQuotaState.activeExhaustedKeys) g.apiKeyQuotaState.activeExhaustedKeys = new Set();
+  g.apiKeyQuotaState.activeExhaustedKeys.add(keyId);
   const text = buildApiKeyQuotaExhaustedText({ ...details, locale: g.settings?.locale, nowMs });
-  await sendDingTalkAlert(g.settings, text, fetchImpl);
-  g.apiKeyQuotaState.lastAlertByKey.set(keyId, nowMs);
+  try {
+    await sendDingTalkAlert(g.settings, text, fetchImpl);
+    g.apiKeyQuotaState.lastAlertByKey.set(keyId, nowMs);
+  } catch (error) {
+    g.apiKeyQuotaState.activeExhaustedKeys.delete(keyId);
+    throw error;
+  }
   console.warn(`[ModelIdleAlert] DingTalk key quota alert sent for ${details.provider || "unknown"}/${details.keyName || keyId}`);
   return { ...result, alerted: true };
+}
+
+export async function markApiKeyQuotaRecovered(keyId) {
+  if (!keyId) return;
+  if (!g.apiKeyQuotaState) g.apiKeyQuotaState = createApiKeyQuotaAlertState();
+  markApiKeyQuotaAvailable(g.apiKeyQuotaState, keyId);
+}
+
+export async function resetApiKeyQuotaAlertState(keyId) {
+  if (!keyId) return;
+  if (!g.apiKeyQuotaState) g.apiKeyQuotaState = createApiKeyQuotaAlertState();
+  clearApiKeyQuotaAlertStateForKey(g.apiKeyQuotaState, keyId);
 }
 
 export async function notifyApiKeyQuotaThresholdExceeded(details = {}, nowMs = Date.now(), fetchImpl = fetch) {

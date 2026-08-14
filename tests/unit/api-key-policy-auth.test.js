@@ -40,8 +40,10 @@ vi.mock("@/lib/network/connectionProxy", () => ({
 }));
 
 vi.mock("@/shared/services/modelIdleAlert.js", () => ({
+  markApiKeyQuotaRecovered: vi.fn(async () => undefined),
   notifyApiKeyQuotaExhausted: vi.fn(async () => ({ alerted: true })),
   notifyApiKeyQuotaThresholdExceeded: vi.fn(async () => ({ alerted: true })),
+  resetApiKeyQuotaAlertState: vi.fn(async () => undefined),
 }));
 
 describe("api key policy auth enforcement", () => {
