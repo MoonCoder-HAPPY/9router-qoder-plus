@@ -56,13 +56,17 @@ Dashboard -> Endpoint 的 API Key 管理中，新增了面向 Qoder 的 Key 级�
 - 可以为某个 API Key 指定只能使用某一个或某几个 Qoder 账号。
 - 可以按账号分别分配额度，而不是只能给这个 Key 设置一个总额度。
 - 分配上限按账号剩余可分配额度计算，例如账号 A 可用 10000 时可以只给某个 Key 分配 5000，账号 B 可用 2000 时可以只分配 1000。
+- 账号列表会同时显示其它 Key 已占用的额度和当前还可分配额度，避免手动心算。
 - 运行时会按每个账号自己的分配额度统计消耗，某个账号的分配额度用完后，再切到下一个可用账号。
 - 页面会显示当前 Key 的 `Used / Total`、`Remaining`、`Active Account`，方便判断这个 Key 已使用多少、总共分配多少、当前正在消费哪个账号。
+- `Consumption Priority` 会展示每个账号的分配额度、已使用额度和剩余分配额度。
+- 在消费优先级列表中，已用完的账号会置灰并显示 `Exhausted`，当前正在消费的账号会显示浅橙色底和 `In use`。
+- `Reset usage` 支持重置当前 Key 的 Qoder 用量统计，并已适配简体中文确认弹窗。
 - 当某个 API Key 分配的 Qoder 额度全部用完时，可以发送钉钉告警。
 
 ![API Key account allocation modal with per-account Qoder credits](docs/images/api-key-account-allocation.png)
 
-_Key 分配页面支持按 Qoder 账号分别填写可消费额度，并显示当前 Key 的已用量、剩余额度和当前账号。_
+_Key 分配页面支持按 Qoder 账号分别填写可消费额度，并显示当前可分配额度、当前 Key 的已用量、剩余额度和当前账号。_
 
 交互上分成两个区域：
 
@@ -71,7 +75,7 @@ _Key 分配页面支持按 Qoder 账号分别填写可消费额度，并显示�
 
 ![Consumption priority controls for selected Qoder accounts](docs/images/api-key-consumption-priority.png)
 
-_消费优先级单独设置，明确控制多个已选账号的消费顺序。_
+_消费优先级单独设置，明确控制多个已选账号的消费顺序，并标识当前正在使用或已用完的账号。_
 
 这样做的原因是 Qoder 缓存命中率和账号连续消费有关。你可以让某个 Key 优先消耗账号 A，A 的分配额度用完后再消耗账号 B，避免多个账号来回切换影响缓存。
 
