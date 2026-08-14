@@ -49,6 +49,26 @@ function getExistingConsumedByAccount(policy, accountId, remainingQuota) {
   return Math.max(baselineConsumed, Number.isFinite(ledgerUsed) ? ledgerUsed : 0);
 }
 
+function getAssignableCreditsForAccount(policy, account) {
+  const preservedConsumed = getExistingConsumedByAccount(policy, account.id, account.remainingQuota);
+  return Math.max(
+    0,
+    (Number(account.remainingQuota) || 0) + preservedConsumed - (Number(account.allocatedToOtherKeys) || 0)
+  );
+}
+
+function getAccountUsageDisplay(policy, account, allocationValue) {
+  const allocated = Number(allocationValue) || 0;
+  const used = getExistingConsumedByAccount(policy, account.id, account.remainingQuota);
+  const remaining = Math.max(0, allocated - used);
+  return {
+    allocated,
+    used,
+    remaining,
+    exhausted: allocated > 0 && remaining <= 0,
+  };
+}
+
 function sortSelectedByAccountList(selectedIds, accounts) {
   const selected = new Set(selectedIds);
   const ordered = accounts.map((account) => account.id).filter((id) => selected.has(id));
@@ -275,6 +295,7 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
                 )}
                 {accounts.map((account) => {
                   const isSelected = form.connectionIds.includes(account.id);
+                  const assignableCredits = getAssignableCreditsForAccount(apiKeyItem?.policy, account);
                   return (
                   <div
                     key={account.id}
@@ -334,6 +355,13 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
                       {account.allocatedToOtherKeys > 0 && (
                         <p className="text-xs text-amber-600 dark:text-amber-400 mt-2">
                           <span>{formatNumber(account.allocatedToOtherKeys)}</span> <span>allocated to other keys</span>
+                          <span> · </span>
+                          <span>Assignable</span>: <span>{formatNumber(assignableCredits)}</span>
+                        </p>
+                      )}
+                      {account.allocatedToOtherKeys <= 0 && (
+                        <p className="text-xs text-text-muted mt-2">
+                          <span>Assignable</span>: <span>{formatNumber(assignableCredits)}</span>
                         </p>
                       )}
                       {account.quotaMessage && (
@@ -357,18 +385,48 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
                 <div className="p-3 text-sm text-text-muted">Select accounts to set priority.</div>
               ) : (
                 <div>
-                  {priorityAccounts.map((account, index) => (
+                  {priorityAccounts.map((account, index) => {
+                    const usage = getAccountUsageDisplay(apiKeyItem?.policy, account, form.accountAllocations[account.id]);
+                    const isActive = keyUsage?.activeConnectionId === account.id && !usage.exhausted;
+                    const rowClassName = usage.exhausted
+                      ? "bg-surface-2/80 text-text-muted"
+                      : isActive
+                        ? "bg-orange-50/80 dark:bg-orange-500/10"
+                        : "bg-surface";
+                    return (
                     <div
                       key={account.id}
-                      className="flex items-center gap-3 p-3 border-b border-border last:border-b-0"
+                      className={`flex items-center gap-3 p-3 border-b border-border last:border-b-0 ${rowClassName}`}
                     >
-                      <span className="shrink-0 inline-flex h-6 min-w-6 items-center justify-center rounded bg-brand-500/10 px-1 text-xs font-semibold text-brand-600">
+                      <span className={`shrink-0 inline-flex h-6 min-w-6 items-center justify-center rounded px-1 text-xs font-semibold ${
+                        usage.exhausted
+                          ? "bg-surface-3 text-text-muted"
+                          : isActive
+                            ? "bg-orange-100 text-orange-700 dark:bg-orange-500/20 dark:text-orange-300"
+                            : "bg-brand-500/10 text-brand-600"
+                      }`}>
                         {index + 1}
                       </span>
                       <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium truncate">{account.name}</p>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <p className="text-sm font-medium truncate">{account.name}</p>
+                          {usage.exhausted && (
+                            <span className="shrink-0 inline-flex rounded bg-surface-3 px-2 py-0.5 text-[11px] font-medium text-text-muted">
+                              Exhausted
+                            </span>
+                          )}
+                          {isActive && (
+                            <span className="shrink-0 inline-flex rounded bg-orange-100 px-2 py-0.5 text-[11px] font-medium text-orange-700 dark:bg-orange-500/20 dark:text-orange-300">
+                              In use
+                            </span>
+                          )}
+                        </div>
                         <p className="text-xs text-text-muted">
-                          <span>Allocated credits</span>: <span>{formatNumber(form.accountAllocations[account.id])}</span>
+                          <span>Allocated credits</span>: <span>{formatNumber(usage.allocated)}</span>
+                          <span> · </span>
+                          <span>Used</span>: <span>{formatNumber(usage.used)}</span>
+                          <span> · </span>
+                          <span>Remaining allocation</span>: <span>{formatNumber(usage.remaining)}</span>
                         </p>
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
@@ -394,7 +452,8 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
                         </button>
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -438,10 +497,10 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
         isOpen={confirmResetUsage}
         onClose={() => !resettingUsage && setConfirmResetUsage(false)}
         onConfirm={resetUsage}
-        title="Reset Qoder Usage"
-        message="Reset this key's recorded Qoder usage to 0 and start counting again from the current account quotas? This cannot be undone."
-        confirmText="Reset usage"
-        cancelText="Cancel"
+        title={translate("Reset Qoder Usage")}
+        message={translate("Reset this key's recorded Qoder usage to 0 and start counting again from the current account quotas? This cannot be undone.")}
+        confirmText={translate("Reset usage")}
+        cancelText={translate("Cancel")}
         variant="danger"
         loading={resettingUsage}
       />
