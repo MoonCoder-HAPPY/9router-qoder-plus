@@ -51,6 +51,7 @@ describe("zh-CN literals", () => {
       "Save alert settings",
       "Test DingTalk",
       "DingTalk test message sent",
+      "x credit multiplier",
       "Resource Package",
       "Personal",
     ];

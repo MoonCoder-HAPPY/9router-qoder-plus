@@ -15,7 +15,7 @@ describe("/v1/models qoder public ids", () => {
     vi.doMock("open-sse/services/qoderModels.js", () => ({
       resolveQoderModels: vi.fn(async () => ({
         models: [
-          { id: "gm51model", name: "GLM-5.2" },
+          { id: "gm51model", name: "GLM-5.2", priceFactor: 0.6, originalPriceFactor: 0.8 },
           { id: "qmodel", name: "Qwen3.7-Plus" },
         ],
       })),
@@ -52,6 +52,8 @@ describe("/v1/models qoder public ids", () => {
       object: "model",
       owned_by: "qoder",
       name: "GLM-5.2",
+      price_factor: 0.6,
+      original_price_factor: 0.8,
     });
     expect(models.some((m) => m.id === "qd/gm51model")).toBe(false);
   });

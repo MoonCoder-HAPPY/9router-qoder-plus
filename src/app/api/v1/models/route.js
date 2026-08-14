@@ -489,6 +489,14 @@ export async function buildModelsList(kindFilter, options = {}) {
           owned_by: providerId === "qoder" ? "qoder" : outputAlias,
         };
         if (qoderPublicModel?.name) model.name = qoderPublicModel.name;
+        if (providerId === "qoder" && qoderPublicModel) {
+          if (Number.isFinite(Number(qoderPublicModel.priceFactor))) {
+            model.price_factor = Number(qoderPublicModel.priceFactor);
+          }
+          if (Number.isFinite(Number(qoderPublicModel.originalPriceFactor))) {
+            model.original_price_factor = Number(qoderPublicModel.originalPriceFactor);
+          }
+        }
         // Live-catalog resolvers (kiro/qoder/github/clinepass) mostly only return
         // { id, name } — no per-model capability data. Fall back to the same
         // pattern-matched capabilities the dashboard uses (useModelCaps.js) so

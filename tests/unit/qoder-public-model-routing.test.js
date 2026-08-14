@@ -47,12 +47,32 @@ describe("Qoder public model routing", () => {
     });
   });
 
+  it("keeps bare legacy qoder internal ids working after aliases", async () => {
+    const { getModelInfo } = await import("@/sse/services/model.js");
+
+    await expect(getModelInfo("gm51model")).resolves.toEqual({
+      provider: "qoder",
+      model: "gm51model",
+    });
+  });
+
   it("lets explicit model aliases win over qoder public ids", async () => {
     const db = await import("@/lib/db/index.js");
     await db.setModelAlias("GLM-5.2", "openai/gpt-4o");
     const { getModelInfo } = await import("@/sse/services/model.js");
 
     await expect(getModelInfo("GLM-5.2")).resolves.toEqual({
+      provider: "openai",
+      model: "gpt-4o",
+    });
+  });
+
+  it("lets explicit model aliases win over bare qoder internal ids", async () => {
+    const db = await import("@/lib/db/index.js");
+    await db.setModelAlias("gm51model", "openai/gpt-4o");
+    const { getModelInfo } = await import("@/sse/services/model.js");
+
+    await expect(getModelInfo("gm51model")).resolves.toEqual({
       provider: "openai",
       model: "gpt-4o",
     });

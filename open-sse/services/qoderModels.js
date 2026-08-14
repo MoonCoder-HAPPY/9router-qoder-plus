@@ -131,6 +131,8 @@ async function fetchQoderCatalogRaw(credentials, signal, proxyOptions = null) {
       isVL: !!entry.is_vl,
       isReasoning: !!entry.is_reasoning,
       maxOutputTokens: Number(entry.max_output_tokens) || 0,
+      priceFactor: Number.isFinite(Number(entry.price_factor)) ? Number(entry.price_factor) : null,
+      originalPriceFactor: Number.isFinite(Number(entry.original_price_factor)) ? Number(entry.original_price_factor) : null,
       description: entry.description || "",
     });
   }

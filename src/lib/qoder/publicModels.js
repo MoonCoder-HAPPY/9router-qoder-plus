@@ -152,5 +152,9 @@ export async function resolveQoderPublicModelId(publicId) {
     if (model.name === cleanPublicId) return model.id;
   }
 
+  for (const internalId of allDefaultModels(defaults).keys()) {
+    if (internalId === cleanPublicId) return internalId;
+  }
+
   return null;
 }

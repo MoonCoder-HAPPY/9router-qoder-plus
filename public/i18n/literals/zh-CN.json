@@ -1455,5 +1455,6 @@
   "Qoder Internal ID": "Qoder 内部 ID",
   "This is the model ID returned by /v1/models and used by clients.": "这是 /v1/models 返回并供客户端调用使用的模型 ID。",
   "Failed to save Qoder public model ID": "保存 Qoder 对外模型 ID 失败",
-  "Qoder models refreshed": "Qoder 模型已刷新"
+  "Qoder models refreshed": "Qoder 模型已刷新",
+  "x credit multiplier": "x 额度倍率"
 }

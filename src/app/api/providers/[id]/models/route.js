@@ -378,6 +378,8 @@ const PROVIDER_MODELS_CONFIG = {
               isVL: m.isVL,
               isReasoning: m.isReasoning,
               maxOutputTokens: m.maxOutputTokens,
+              priceFactor: m.priceFactor,
+              originalPriceFactor: m.originalPriceFactor,
               description: m.description,
             })),
           };
