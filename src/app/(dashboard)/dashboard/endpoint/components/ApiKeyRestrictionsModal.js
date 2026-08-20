@@ -273,6 +273,9 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
                       {keyUsage.activeAccountName || "None"}
                     </p>
                   </div>
+                  <p className="col-span-full text-[11px] leading-snug text-text-muted">
+                    {translate("Usage is measured from the moment this key's allocation is saved. Qoder settles credits with a short delay, so very recent calls may appear a few minutes late.")}
+                  </p>
                 </div>
               )}
               <div className="max-h-72 overflow-auto">

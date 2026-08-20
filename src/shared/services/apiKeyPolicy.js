@@ -207,6 +207,7 @@ export function evaluateApiKeyProviderCreditUsage({ policy, provider, currentRem
   const ledger = normalizeCreditUsageLedger(creditUsageLedger || providerPolicy.creditUsageLedger, selectedConnectionIds);
   let used = 0;
   const unavailableConnectionIds = [];
+  const exhaustedConnectionIds = [];
   let activeConnectionId = null;
 
   for (const connectionId of selectedConnectionIds) {
@@ -227,14 +228,16 @@ export function evaluateApiKeyProviderCreditUsage({ policy, provider, currentRem
       activeConnectionId = connectionId;
       break;
     }
+    // Verifiable but over budget / out of remaining quota: do not route here.
+    exhaustedConnectionIds.push(connectionId);
   }
 
   const usedAmount = Math.max(0, used);
   const remaining = Math.max(0, limit - usedAmount);
   if (usedAmount >= limit) {
-    return { allowed: false, reason: "quota_exhausted", used: usedAmount, limit, remaining, unavailableConnectionIds, activeConnectionId };
+    return { allowed: false, reason: "quota_exhausted", used: usedAmount, limit, remaining, unavailableConnectionIds, exhaustedConnectionIds, activeConnectionId };
   }
-  return { allowed: true, used: usedAmount, limit, remaining, unavailableConnectionIds, activeConnectionId };
+  return { allowed: true, used: usedAmount, limit, remaining, unavailableConnectionIds, exhaustedConnectionIds, activeConnectionId };
 }
 
 export function mergeQoderCreditUsageLedger({ providerPolicy, currentRemainingByConnectionId, updatedAt = new Date().toISOString() }) {

@@ -133,6 +133,7 @@ export function createDisconnectAwareStream(transformStream, streamController, o
         const msg0 = error?.message || "";
         const isControllerClosed = msg0.includes("already closed") || msg0.includes("Invalid state");
         if (!isControllerClosed) streamController.handleError(error);
+        try { transformStream.flushPartialUsage?.(); } catch {}
         reader.cancel().catch(() => {});
         writer.abort().catch(() => {});
 
@@ -165,6 +166,9 @@ export function createDisconnectAwareStream(transformStream, streamController, o
     },
 
     cancel(reason) {
+      // Persist partial usage before teardown — an aborted response still cost
+      // tokens upstream, and dropping them would make billing unreconcilable.
+      try { transformStream.flushPartialUsage?.(); } catch {}
       streamController.handleDisconnect(reason || "cancelled");
       reader.cancel();
       writer.abort();

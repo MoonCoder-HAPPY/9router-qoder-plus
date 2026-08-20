@@ -15,7 +15,7 @@ import {
   mergeQoderCreditUsageLedger,
   sumQoderRemainingQuota,
 } from "@/shared/services/apiKeyPolicy.js";
-import { markApiKeyQuotaRecovered, notifyApiKeyQuotaExhausted, notifyApiKeyQuotaThresholdExceeded } from "@/shared/services/modelIdleAlert.js";
+import { markApiKeyQuotaRecovered, notifyApiKeyQuotaExhausted, notifyApiKeyQuotaThresholdExceeded, notifyUsageFetchFailed } from "@/shared/services/modelIdleAlert.js";
 import * as log from "../utils/logger.js";
 
 // Mutex to prevent race conditions during account selection
@@ -43,14 +43,28 @@ async function getQoderRemainingQuotaForPolicy(connection) {
   return quotaState;
 }
 
+// A single account whose usage fetch fails (e.g. revoked token → 401) must not
+// take down quota enforcement for the whole key. Isolate the failure to that
+// account: mark its remaining as unknown (NaN) so the evaluator treats it as
+// unavailable, and collect the failure so the caller can alert on it.
 async function getQoderRemainingByConnectionId(connections, connectionIds) {
   const allowedIds = new Set(connectionIds || []);
   const result = {};
+  const failures = [];
   for (const connection of connections) {
     if (allowedIds.size > 0 && !allowedIds.has(connection.id)) continue;
-    result[connection.id] = await getQoderRemainingQuotaForPolicy(connection);
+    try {
+      result[connection.id] = await getQoderRemainingQuotaForPolicy(connection);
+    } catch (error) {
+      result[connection.id] = { remaining: Number.NaN, quotaRows: [] };
+      failures.push({
+        connectionId: connection.id,
+        name: connection.displayName || connection.name || connection.email || connection.id,
+        error: error?.message || String(error),
+      });
+    }
   }
-  return result;
+  return { remaining: result, failures };
 }
 
 function invalidateQoderPolicyQuotaCache(connectionId) {
@@ -133,7 +147,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       let usageState;
       if (providerId === "qoder" && providerPolicy.metric === API_KEY_POLICY_LIMIT_METRIC.CREDITS) {
         try {
-          const remainingByConnectionId = await getQoderRemainingByConnectionId(policyFilteredConnections, connectionIds);
+          const { remaining: remainingByConnectionId, failures: quotaFetchFailures } = await getQoderRemainingByConnectionId(policyFilteredConnections, connectionIds);
           const creditUsageLedger = mergeQoderCreditUsageLedger({
             providerPolicy,
             currentRemainingByConnectionId: remainingByConnectionId,
@@ -148,6 +162,27 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
             await updateApiKeyQoderCreditUsageLedger(options.apiKeyRecord.id, remainingByConnectionId).catch((error) => {
               log.warn("AUTH", `${provider} | API key quota ledger update failed: ${error.message}`);
             });
+          }
+          // Isolate failed accounts from routing and alert (rate-limited) so a
+          // dead token never silently disables quota enforcement for the key.
+          if (quotaFetchFailures.length > 0) {
+            const failedIds = new Set(quotaFetchFailures.map((f) => f.connectionId));
+            for (const failure of quotaFetchFailures) {
+              log.warn("AUTH", `${provider} | quota fetch failed for account ${failure.name} (${failure.connectionId.slice(0, 8)}): ${failure.error}`);
+              notifyUsageFetchFailed({
+                connectionId: failure.connectionId,
+                accountName: failure.name,
+                keyName: options?.apiKeyRecord?.name || options?.apiKeyRecord?.id || "unknown",
+                provider: providerId,
+                error: failure.error,
+              }).catch((error) => {
+                log.warn("AUTH", `${provider} | usage-fetch-failure alert failed: ${error.message}`);
+              });
+            }
+            // Note: a failed usage fetch does NOT remove the account from routing
+            // (fail-open) — its chat token may still work even when the usage
+            // endpoint errors. Only accounts *verified* as over-budget are dropped
+            // (see exhaustedConnectionIds filter below).
           }
         } catch (error) {
           log.warn("AUTH", `${provider} | API key quota check skipped: ${error.message}`);
@@ -202,6 +237,17 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       }).catch((error) => {
         log.warn("AUTH", `${provider} | API key quota threshold alert failed: ${error.message}`);
       });
+      // Remove accounts verified as over-budget from the routing pool so an
+      // exhausted account is never silently reused. Accounts whose quota could
+      // not be read stay eligible (fail-open) — only *verified* exhaustion drops.
+      if (providerId === "qoder" && usageState.exhaustedConnectionIds?.length > 0) {
+        const exhausted = new Set(usageState.exhaustedConnectionIds);
+        const surviving = policyFilteredConnections.filter((c) => !exhausted.has(c.id));
+        if (surviving.length < policyFilteredConnections.length) {
+          policyFilteredConnections.splice(0, policyFilteredConnections.length, ...surviving);
+          log.warn("AUTH", `${provider} | ${exhausted.size} account(s) over allocated budget removed from routing (${[...exhausted].map((id) => id.slice(0, 8)).join(",")})`);
+        }
+      }
       if (providerId === "qoder" && usageState.activeConnectionId && !excludeSet.has(usageState.activeConnectionId)) {
         const activeId = usageState.activeConnectionId;
         policyFilteredConnections.splice(

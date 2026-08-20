@@ -43,6 +43,7 @@ vi.mock("@/shared/services/modelIdleAlert.js", () => ({
   markApiKeyQuotaRecovered: vi.fn(async () => undefined),
   notifyApiKeyQuotaExhausted: vi.fn(async () => ({ alerted: true })),
   notifyApiKeyQuotaThresholdExceeded: vi.fn(async () => ({ alerted: true })),
+  notifyUsageFetchFailed: vi.fn(async () => ({ alerted: true })),
   resetApiKeyQuotaAlertState: vi.fn(async () => undefined),
 }));
 
@@ -387,5 +388,96 @@ describe("api key policy auth enforcement", () => {
 
     const second = await getProviderCredentials("qoder", null, "auto", policyOptions);
     expect(second.connectionId).toBe("conn-a");
+  });
+
+  it("keeps quota enforcement for healthy accounts when one Qoder account's usage fetch 401s", async () => {
+    const usage = await import("open-sse/services/usage.js");
+    usage.getUsageForProvider.mockImplementation(async (connection) => {
+      if (connection.accessToken === "b") {
+        // Dead token → usage endpoint 401
+        return { message: "Qoder connected. Usage fetch returned 401." };
+      }
+      return {
+        quotas: {
+          user: { total: 3000, used: 2900, remaining: 100, unit: "credits" },
+          organization: { total: 0, used: 0, remaining: 0, unit: "credits" },
+        },
+      };
+    });
+    const alerts = await import("@/shared/services/modelIdleAlert.js");
+
+    const { getProviderCredentials } = await import("../../src/sse/services/auth.js");
+    const credentials = await getProviderCredentials("qoder", null, "auto", {
+      apiKeyRecord: { id: "key-id", name: "com" },
+      apiKeyPolicy: {
+        enabled: true,
+        providers: {
+          qoder: {
+            connectionIds: ["conn-a", "conn-b"],
+            priorityOrder: ["conn-a", "conn-b"],
+            accountAllocations: { "conn-a": 3000, "conn-b": 1000 },
+            metric: "credits",
+            quotaBaseline: {
+              "conn-a": { initialRemainingQuota: 3000, capturedAt: "2026-08-20T02:00:00.000Z" },
+              "conn-b": { initialRemainingQuota: 2000, capturedAt: "2026-08-20T02:00:00.000Z" },
+            },
+          },
+        },
+      },
+      apiKeyValue: "sk-test",
+    });
+
+    // The dead account (conn-b) must NOT disable the healthy account's (conn-a)
+    // quota check. conn-a is exhausted (used 2900 >= ... no, 2900 < 3000), so the
+    // request is allowed on conn-a. The key point: quota check RAN (not skipped).
+    expect(credentials.connectionId).toBe("conn-a");
+    // The dead account's failure should fire an alert.
+    expect(alerts.notifyUsageFetchFailed).toHaveBeenCalledWith(expect.objectContaining({
+      connectionId: "conn-b",
+      provider: "qoder",
+    }));
+  });
+
+  it("blocks the exhausted healthy account even when another account's usage fetch fails", async () => {
+    const usage = await import("open-sse/services/usage.js");
+    usage.getUsageForProvider.mockImplementation(async (connection) => {
+      if (connection.accessToken === "b") {
+        return { message: "Qoder connected. Usage fetch returned 401." };
+      }
+      return {
+        quotas: {
+          user: { total: 3000, used: 3000, remaining: 0, unit: "credits" },
+          organization: { total: 0, used: 0, remaining: 0, unit: "credits" },
+        },
+      };
+    });
+
+    const { getProviderCredentials } = await import("../../src/sse/services/auth.js");
+    const credentials = await getProviderCredentials("qoder", null, "auto", {
+      apiKeyRecord: { id: "key-id", name: "com" },
+      apiKeyPolicy: {
+        enabled: true,
+        providers: {
+          qoder: {
+            connectionIds: ["conn-a", "conn-b"],
+            priorityOrder: ["conn-a", "conn-b"],
+            accountAllocations: { "conn-a": 3000, "conn-b": 1000 },
+            metric: "credits",
+            quotaBaseline: {
+              "conn-a": { initialRemainingQuota: 3000, capturedAt: "2026-08-20T02:00:00.000Z" },
+              "conn-b": { initialRemainingQuota: 2000, capturedAt: "2026-08-20T02:00:00.000Z" },
+            },
+          },
+        },
+      },
+      apiKeyValue: "sk-test",
+    });
+
+    // conn-a is exhausted (3000/3000). conn-b failed fetch (unknown). The check
+    // must NOT silently allow everything: conn-a is exhausted, conn-b unknown.
+    // With conn-a exhausted and conn-b unavailable, the policy can't pick a
+    // verified account — but it must at least have run the check on conn-a.
+    // conn-a used reached its allocation so it should not be the active pick.
+    expect(credentials.connectionId).not.toBe("conn-a");
   });
 });

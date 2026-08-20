@@ -11,9 +11,13 @@ const g = (global.__modelIdleAlert ??= {
   state: null,
   settings: null,
   apiKeyQuotaState: null,
+  usageFetchAlertAt: null,
   timer: null,
   checkIntervalMs: DEFAULT_CHECK_INTERVAL_MS,
 });
+
+// Cooldown between "account quota fetch failed" alerts, per account.
+const DEFAULT_USAGE_FETCH_ALERT_COOLDOWN_MINUTES = 30;
 
 export function createModelIdleAlertState(initial = {}) {
   return {
@@ -377,6 +381,40 @@ export async function notifyApiKeyQuotaThresholdExceeded(details = {}, nowMs = D
   g.apiKeyQuotaState.lastThresholdAlertByKey.set(keyId, nowMs);
   console.warn(`[ModelIdleAlert] DingTalk key quota threshold alert sent for ${details.provider || "unknown"}/${details.keyName || keyId} (${result.usagePercent}%)`);
   return { ...result, alerted: true };
+}
+
+export function buildUsageFetchFailedText({ keyName, provider, accountName, error, locale = "en", nowMs = Date.now() }) {
+  const name = keyName || "unknown";
+  const providerName = provider || "unknown";
+  const account = accountName || "unknown";
+  const reason = String(error || "unknown").slice(0, 200);
+  if (locale === "zh-CN" || locale === "zh") {
+    return `[9router] 账号额度读取失败，该账号已被临时跳过额度校验。Key：${name}。提供商：${providerName}。账号：${account}。原因：${reason}。时间：${formatTime(nowMs)}。若持续出现请重新授权该账号。`;
+  }
+  return `[9router] Failed to read account quota; quota enforcement for this account is temporarily skipped. Key: ${name}. Provider: ${providerName}. Account: ${account}. Reason: ${reason}. Time: ${formatTime(nowMs)}. Re-authenticate the account if this persists.`;
+}
+
+function getUsageFetchAlertState() {
+  if (!(g.usageFetchAlertAt instanceof Map)) g.usageFetchAlertAt = new Map();
+  return g.usageFetchAlertAt;
+}
+
+export async function notifyUsageFetchFailed(details = {}, nowMs = Date.now(), fetchImpl = fetch) {
+  await ensureModelIdleAlertConfigured();
+  const settings = g.settings;
+  if (!settings?.enabled || !settings?.dingtalkWebhook) return { shouldAlert: false, reason: "disabled" };
+  const accountId = details.connectionId || details.accountName || "unknown";
+  const state = getUsageFetchAlertState();
+  const cooldownMs = DEFAULT_USAGE_FETCH_ALERT_COOLDOWN_MINUTES * MINUTE_MS;
+  const lastAlertAt = state.get(accountId) || null;
+  if (lastAlertAt && nowMs - lastAlertAt < cooldownMs) {
+    return { shouldAlert: false, reason: "cooldown", lastAlertAt };
+  }
+  const text = buildUsageFetchFailedText({ ...details, locale: settings?.locale, nowMs });
+  await sendDingTalkAlert(settings, text, fetchImpl);
+  state.set(accountId, nowMs);
+  console.warn(`[ModelIdleAlert] DingTalk usage-fetch-failure alert sent for ${details.provider || "unknown"}/${accountId}`);
+  return { shouldAlert: true, alerted: true };
 }
 
 export function getModelIdleAlertRuntimeState() {

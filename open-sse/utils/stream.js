@@ -72,8 +72,24 @@ export function createSSEStream(options = {}) {
   let openAIResponsesTerminalSeen = false;
   let openAIResponsesDoneSent = false;
   let streamDoneSent = false;  // track duplicate [DONE] across transform + flush
+  let completionRecorded = false;  // ensure usage/content is recorded exactly once (flush OR abort)
 
-  return new TransformStream({
+  // Record whatever usage/content has accumulated so far. Called by flush() on a
+  // normal stream end, and by the disconnect/abort path when the client goes away
+  // mid-stream — otherwise the tokens from an aborted response are silently lost.
+  const recordCompletion = () => {
+    if (completionRecorded) return;
+    completionRecorded = true;
+    const finalUsage = mode === STREAM_MODE.TRANSLATE ? state?.usage : usage;
+    if (onStreamComplete) {
+      onStreamComplete({
+        content: accumulatedContent,
+        thinking: accumulatedThinking
+      }, finalUsage, ttftAt);
+    }
+  };
+
+  const stream = new TransformStream({
     transform(chunk, controller) {
       if (!ttftAt) ttftAt = Date.now();
       const text = decoder.decode(chunk, { stream: true });
@@ -374,12 +390,7 @@ export function createSSEStream(options = {}) {
             controller.enqueue(sharedEncoder.encode(doneOutput));
           }
 
-          if (onStreamComplete) {
-            onStreamComplete({
-              content: accumulatedContent,
-              thinking: accumulatedThinking
-            }, usage, ttftAt);
-          }
+          recordCompletion();
           return;
         }
 
@@ -451,17 +462,17 @@ export function createSSEStream(options = {}) {
           appendRequestLog({ model, provider, connectionId, tokens: null, status: "200 OK" }).catch(() => { });
         }
         
-        if (onStreamComplete) {
-          onStreamComplete({
-            content: accumulatedContent,
-            thinking: accumulatedThinking
-          }, state?.usage, ttftAt);
-        }
+        recordCompletion();
       } catch (error) {
         console.log("Error in flush:", error);
       }
     }
   });
+
+  // Expose a manual flush so the disconnect path can persist partial usage for
+  // responses that never reach a normal stream end (client closed mid-stream).
+  stream.flushPartialUsage = recordCompletion;
+  return stream;
 }
 
 export function createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider = null, reqLogger = null, toolNameMap = null, model = null, connectionId = null, body = null, onStreamComplete = null, apiKey = null) {

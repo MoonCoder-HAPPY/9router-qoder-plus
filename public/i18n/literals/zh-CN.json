@@ -1456,5 +1456,6 @@
   "This is the model ID returned by /v1/models and used by clients.": "这是 /v1/models 返回并供客户端调用使用的模型 ID。",
   "Failed to save Qoder public model ID": "保存 Qoder 对外模型 ID 失败",
   "Qoder models refreshed": "Qoder 模型已刷新",
-  "x credit multiplier": "x 额度倍率"
+  "x credit multiplier": "x 额度倍率",
+  "Usage is measured from the moment this key's allocation is saved. Qoder settles credits with a short delay, so very recent calls may appear a few minutes late.": "已用量自保存该 Key 分配的时刻开始累计。Qoder 结算存在短暂延迟，最近几分钟的调用可能稍晚才计入。"
 }
