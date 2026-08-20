@@ -17,6 +17,10 @@ RUN --mount=type=cache,target=/root/.npm \
 
 COPY . ./
 ENV NEXT_TELEMETRY_DISABLED=1
+# Cap Node's old-space so `next build` fits small CI/build VMs (e.g. 2 GiB
+# colima) instead of being OOM-killed. Overridable at build time.
+ARG NODE_BUILD_MEMORY_MB=1024
+ENV NODE_OPTIONS="--max-old-space-size=${NODE_BUILD_MEMORY_MB}"
 RUN npm run build
 
 FROM ${NODE_IMAGE} AS runner

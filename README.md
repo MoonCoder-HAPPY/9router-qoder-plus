@@ -63,6 +63,9 @@ Dashboard -> Endpoint 的 API Key 管理中，新增了面向 Qoder 的 Key 级�
 - 在消费优先级列表中，已用完的账号会置灰并显示 `Exhausted`，当前正在消费的账号会显示浅橙色底和 `In use`。
 - `Reset usage` 支持重置当前 Key 的 Qoder 用量统计，并已适配简体中文确认弹窗。
 - 当某个 API Key 分配的 Qoder 额度全部用完时，可以发送钉钉告警。
+- 单个账号的额度接口读取失败（例如 token 失效返回 401）不会再让整个 Key 的配额检查失效。系统会跳过该账号、继续对其它账号做配额校验，并发送钉钉告警提示重新授权。
+- 已经被验证为"分配额度已用完"的账号会从路由池中移除，不会被继续命中；额度暂时读取不出来的账号保持可用（fail-open），不会因瞬时网络错误被误伤。
+- 客户端中途断连的请求也会把已产生的 token 写入用量记录，方便和账号扣费对账。
 
 ![API Key account allocation modal with per-account Qoder credits](docs/images/api-key-account-allocation.png)
 
@@ -106,6 +109,7 @@ Dashboard -> Profile 新增 `Model Idle Alert` 配置区。
 - `模型空闲告警`：监控“最后一次成功模型调用”之后是否长时间没有新的成功调用。如果超过阈值，发送钉钉告警。
 - `API Key 使用率阈值告警`：当任意 API Key 的已用分配额度达到配置的百分比阈值，例如 `80%`，发送钉钉告警。这个告警不拦截请求，只用于提前提醒。
 - `API Key 分配额度耗尽告警`：当某个 API Key 绑定的 Qoder 分配额度已经用完，并且本次请求因此被拒绝时，发送钉钉告警。
+- `账号额度读取失败告警`：当某个 Qoder 账号的额度接口读取失败（例如 token 失效），系统跳过该账号继续校验其它账号，同时发送钉钉告警。该告警按账号单独冷却，避免重复刷屏。
 - `测试告警`：在设置页面点击 `Test DingTalk`，会立即发送一条测试消息，用于验证 webhook 和加签配置是否可用。
 
 ![DingTalk idle alert settings in the dashboard](docs/images/dingtalk-idle-alert-settings.png)
