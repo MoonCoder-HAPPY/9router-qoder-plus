@@ -41,17 +41,6 @@ Qoder 有时不是直接返回 HTTP 错误，而是在已经建立的 SSE 流中
 
 默认配置约等于：排队最多等待 10 分钟左右，流式空闲超时 10 分钟。
 
-### 容器日志时区修复
-
-原镜像容器默认使用 UTC，宿主机和 Dashboard 日志会出现相差 8 小时的问题。本版运行时镜像已内置以下处理：
-
-- 安装 Alpine `tzdata`。
-- 设置 `TZ=Asia/Shanghai`。
-- 将 `/etc/localtime` 链接到 `/usr/share/zoneinfo/Asia/Shanghai`。
-- 写入 `/etc/timezone`。
-
-使用本版镜像时，容器日志、模型调用时间和错误时间都会按北京时间 `CST +0800` 输出，不再显示 UTC。
-
 ### Qoder 额度增强
 
 Qoder 的额度不只有套餐内额度，还可能有资源包。本版增强了额度解析：
@@ -233,12 +222,15 @@ _钉钉告警设置支持空闲阈值、告警冷却、Webhook、加签 Secret �
 
 ## Docker 部署
 
-本版 Dockerfile 默认设置容器时区为 `Asia/Shanghai`。如果没有使用本版镜像，或者需要改成其它时区，可以在启动容器时显式传入：
+### 时区（可选）
+
+本版 Dockerfile 默认时区为 `Asia/Shanghai`。部署到其它地区时，可以通过 `TZ` 环境变量覆盖，例如：
 
 ```bash
--e TZ=Asia/Shanghai
--v /usr/share/zoneinfo/Asia/Shanghai:/etc/localtime:ro
+-e TZ=America/New_York
 ```
+
+本版镜像已经安装 `tzdata`，无需额外挂载宿主机时区文件。
 
 验证容器时间：
 
@@ -246,10 +238,10 @@ _钉钉告警设置支持空闲阈值、告警冷却、Webhook、加签 Secret �
 docker exec 9router date '+%Y-%m-%d %H:%M:%S %Z %z'
 ```
 
-北京时间输出应类似：
+输出示例：
 
 ```text
-2026-09-10 20:29:21 CST +0800
+2026-09-10 08:29:21 EDT -0400
 ```
 
 ### 方式一：本地构建镜像
