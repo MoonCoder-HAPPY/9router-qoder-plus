@@ -88,6 +88,8 @@ describe("Qoder public model ids", () => {
 
     expect(models.find((model) => model.internalId === "dmodel")?.isVL).toBe(true);
     expect(models.find((model) => model.internalId === "textmodel")?.isVL).toBe(false);
+    expect(models.find((model) => model.internalId === "dmodel")?.supportsImageInput).toBe(false);
+    expect(models.find((model) => model.internalId === "textmodel")?.supportsImageInput).toBe(false);
   });
 
   it("rejects overrides that duplicate a learned default public id", async () => {

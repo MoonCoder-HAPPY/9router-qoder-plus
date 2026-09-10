@@ -438,6 +438,13 @@ describe("validateQoderImageSupport", () => {
     })).toThrow(/does not support image input/i);
   });
 
+  it("rejects DeepSeek images even when Qoder metadata says is_vl true", () => {
+    expect(() => validateQoderImageSupport({
+      modelConfig: { key: "dmodel", is_vl: true },
+      imageCount: 1,
+    })).toThrow(/does not support image input/i);
+  });
+
   it("accepts live vision metadata when images are present", () => {
     expect(validateQoderImageSupport({
       modelConfig: { key: "vision", is_vl: true },

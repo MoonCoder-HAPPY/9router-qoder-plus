@@ -376,6 +376,7 @@ const PROVIDER_MODELS_CONFIG = {
               defaultPublicId: m.defaultPublicId,
               contextLength: m.contextLength,
               isVL: m.isVL,
+              supportsImageInput: m.supportsImageInput,
               isReasoning: m.isReasoning,
               maxOutputTokens: m.maxOutputTokens,
               priceFactor: m.priceFactor,

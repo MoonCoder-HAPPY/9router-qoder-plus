@@ -1,4 +1,5 @@
 import qoderProvider from "open-sse/providers/registry/qoder.js";
+import { supportsQoderImageInput } from "open-sse/shared/qoder/vision.js";
 import { makeKv } from "@/lib/db/helpers/kvStore.js";
 
 const qoderPublicModelKv = makeKv("qoderPublicModels");
@@ -128,6 +129,7 @@ export async function decorateQoderModelsForPublic(models) {
       internalId: normalized.internalId,
       qoderInternalId: normalized.internalId,
       defaultPublicId: normalized.fallbackPublicId,
+      supportsImageInput: supportsQoderImageInput(normalized),
     });
   }
 

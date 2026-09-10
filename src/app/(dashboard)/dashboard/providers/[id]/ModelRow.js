@@ -36,7 +36,7 @@ export default function ModelRow({ model, fullModel, alias, copied, onCopy, test
                 {priceFactor.toFixed(1).replace(/\\.0$/, "")}{translate("x credit multiplier")}
               </span>
             )}
-            {model.isVL === true && (
+            {model.supportsImageInput === true && (
               <span className="inline-flex shrink-0 items-center gap-0.5 rounded border border-sky-500/25 bg-sky-500/10 px-1 text-[9px] font-medium text-sky-700 dark:text-sky-300">
                 <span className="material-symbols-outlined text-[11px] leading-none">image</span>
                 {translate("Image input")}
@@ -114,6 +114,7 @@ ModelRow.propTypes = {
     id: PropTypes.string.isRequired,
     priceFactor: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
     isVL: PropTypes.bool,
+    supportsImageInput: PropTypes.bool,
   }).isRequired,
   fullModel: PropTypes.string.isRequired,
   alias: PropTypes.string,

@@ -22,6 +22,7 @@
 
 import { qoderEncodeBody } from "../shared/qoder/encoding.js";
 import { buildCosyHeaders } from "../shared/qoder/cosy.js";
+import { supportsQoderImageInput } from "../shared/qoder/vision.js";
 import { v4 as uuidv4 } from "uuid";
 import { createHash } from "crypto";
 
@@ -265,7 +266,7 @@ function validateQoderImageSupport({ modelConfig, imageCount, invalidImageCount 
   if (invalidImageCount > 0) {
     throw new Error("qoder: image input is missing a valid image_url");
   }
-  if (imageCount > 0 && modelConfig?.is_vl !== true) {
+  if (imageCount > 0 && !supportsQoderImageInput(modelConfig)) {
     throw new Error(
       `qoder: model "${modelConfig?.key || "unknown"}" does not support image input`,
     );
