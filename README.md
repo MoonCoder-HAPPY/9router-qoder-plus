@@ -102,9 +102,47 @@ _Qoder 模型列表优先展示 display name，并显示每个模型的额度倍
 
 ### Qoder 多模态输入
 
-Qoder 多模态输入已支持 Claude Code 与 Codex。用户直接粘贴的图片，以及 `Read`、截图工具等放在工具结果中的图片，都会转换为 Qoder 的 `message.contents` 图片部件，不再被中间格式转换成纯文本或直接丢弃。
+本版已支持 Claude Code 与 Codex 通过 9router 向 Qoder 传递图片输入，覆盖以下场景：
 
-图片输入优先参考 Qoder 实时模型目录中的 `is_vl`，但会对已知误标模型做保守覆盖：DeepSeek 模型和路由档位不会被当作原生视觉模型。非视觉模型收到图片时会在 9router 本地返回明确错误，不会把无效请求发送到 Qoder。
+- Claude Code 用户消息中直接粘贴或拖拽的图片。
+- Claude Code `tool_result` 中的工具截图或图片。
+- Codex Responses 请求中的 `input_image`。
+- Codex `function_call_output.output` 数组中的图片。
+
+处理流程：
+
+1. Claude `image` 图片块会转换为 OpenAI `image_url`，Codex `input_image` 同样转换为 `image_url`。
+2. Claude `tool_result` 或 Codex `function_call_output` 中出现图片时，工具文本仍保留在 tool 消息中，图片会追加为紧随其后的用户图片消息，并通过 `tool_use_id` 或 `call_id` 关联原工具调用。
+3. Qoder adapter 将图片转换为 `messages[].contents`：
+
+```json
+{
+  "role": "user",
+  "content": "",
+  "contents": [
+    {
+      "type": "image_url",
+      "image_url": {
+        "url": "data:image/png;base64,..."
+      }
+    },
+    {
+      "type": "text",
+      "text": "描述这张图片"
+    }
+  ]
+}
+```
+
+4. 图片存在时，Qoder `model_config.is_vl` 和 `chat_context.extra.modelConfig.is_vl` 会设置为 `true`，顶层 `image_urls` 和 `chat_context.imageUrls` 保持 `null`，图片实际通过 `messages[].contents` 传递。
+
+视觉能力判断优先参考 Qoder 实时模型目录中的 `is_vl`，但会对已知误标模型做保守覆盖：
+
+- DeepSeek 模型不会被当作原生视觉模型。
+- `auto`、`ultimate`、`performance`、`efficient` 等路由档位不会显示为原生视觉模型。
+- 非视觉模型收到图片时，9router 会在本地返回 HTTP 400，不把无效图片请求发送到 Qoder。
+
+图片 URL 支持 data URL 和 HTTP/HTTPS URL。仅提供 `file_id`、没有有效 `image_url` 的图片会返回明确错误，不会把文件 ID 当作 URL 发送。
 
 ### CC-Switch 用量查询
 
