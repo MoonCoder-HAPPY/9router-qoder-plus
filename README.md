@@ -100,6 +100,12 @@ Qoder 官方软件里可选的模型，有些不会稳定出现在 9Router 原�
 
 _Qoder 模型列表优先展示 display name，并显示每个模型的额度倍率；复制和客户端调用默认使用可读模型 ID。_
 
+### Qoder 多模态输入
+
+Qoder 多模态输入已支持 Claude Code 与 Codex。用户直接粘贴的图片，以及 `Read`、截图工具等放在工具结果中的图片，都会转换为 Qoder 的 `message.contents` 图片部件，不再被中间格式转换成纯文本或直接丢弃。
+
+图片是否允许由 Qoder 实时模型目录中的 `is_vl` 决定。视觉模型会正常接收图片；非视觉模型会在 9router 本地返回明确错误，不会把无效请求发送到 Qoder。
+
 ### 钉钉告警
 
 Dashboard -> Profile 新增 `Model Idle Alert` 配置区。

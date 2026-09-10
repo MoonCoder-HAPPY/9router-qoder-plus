@@ -6,7 +6,7 @@
  */
 import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
-import { normalizeResponsesInput } from "../formats/responsesApi.js";
+import { normalizeResponsesInput, splitResponsesFunctionOutput } from "../formats/responsesApi.js";
 import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM } from "../schema/index.js";
 
 // Responses API enforces max 64 chars on call_id (#393)
@@ -30,8 +30,16 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
   // Group items by conversation turn
   let currentAssistantMsg = null;
   let pendingToolResults = [];
+  let pendingImageMessages = [];
   let pendingReasoning = "";
   let pendingReasoningEncrypted = "";
+
+  const flushPendingToolResults = () => {
+    for (const toolResult of pendingToolResults) result.messages.push(toolResult);
+    for (const imageMessage of pendingImageMessages) result.messages.push(imageMessage);
+    pendingToolResults = [];
+    pendingImageMessages = [];
+  };
 
   const inputItems = normalizeResponsesInput(body.input);
   if (!inputItems) return body;
@@ -68,12 +76,7 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
         currentAssistantMsg = null;
       }
       // Flush pending tool results
-      if (pendingToolResults.length > 0) {
-        for (const tr of pendingToolResults) {
-          result.messages.push(tr);
-        }
-        pendingToolResults = [];
-      }
+      flushPendingToolResults();
 
       // Convert content: input_text → text, output_text → text, input_image → image_url
       const content = Array.isArray(item.content)
@@ -81,7 +84,7 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
           if (c.type === RESPONSES_ITEM.INPUT_TEXT) return { type: OPENAI_BLOCK.TEXT, text: c.text };
           if (c.type === RESPONSES_ITEM.OUTPUT_TEXT) return { type: OPENAI_BLOCK.TEXT, text: c.text };
           if (c.type === RESPONSES_ITEM.INPUT_IMAGE) {
-            const url = c.image_url || c.file_id || "";
+            const url = c.image_url || "";
             return { type: OPENAI_BLOCK.IMAGE_URL, image_url: { url, detail: c.detail || "auto" } };
           }
           return c;
@@ -123,19 +126,17 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
         result.messages.push(currentAssistantMsg);
         currentAssistantMsg = null;
       }
-      // Flush any pending tool results first
-      if (pendingToolResults.length > 0) {
-        for (const tr of pendingToolResults) {
-          result.messages.push(tr);
-        }
-        pendingToolResults = [];
+      const { toolContent, imageMessage } = splitResponsesFunctionOutput(item.output);
+      if (imageMessage) {
+        imageMessage.content[0].text = `Image output from tool call ${item.call_id}`;
       }
-      // Add tool result immediately
-      result.messages.push({
+
+      pendingToolResults.push({
         role: ROLE.TOOL,
         tool_call_id: item.call_id,
-        content: typeof item.output === "string" ? item.output : JSON.stringify(item.output)
+        content: toolContent
       });
+      if (imageMessage) pendingImageMessages.push(imageMessage);
     }
     else if (itemType === RESPONSES_ITEM.REASONING) {
       // Buffer reasoning text; attached to next assistant message/function_call.
@@ -155,11 +156,7 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
   if (currentAssistantMsg) {
     result.messages.push(currentAssistantMsg);
   }
-  if (pendingToolResults.length > 0) {
-    for (const tr of pendingToolResults) {
-      result.messages.push(tr);
-    }
-  }
+  flushPendingToolResults();
 
   // Convert tools format.
   // Responses API supports "hosted" tools (e.g. { type: "request_user_input" }) that carry no
