@@ -116,6 +116,16 @@ curl -X POST http://127.0.0.1:20128/api/usage \
   -H "User-Agent: cc-switch/1.0"
 ```
 
+同时支持常见的 `GET /user/balance` 别名：
+
+```bash
+curl http://127.0.0.1:20128/user/balance \
+  -H "Authorization: Bearer <apiKey>" \
+  -H "User-Agent: cc-switch/1.0"
+```
+
+该别名会额外返回 `is_active` 字段，其余额度字段与 `/api/usage` 一致。
+
 返回字段包含 `isValid`、`balance`、`remaining`、`total`、`used`、`unit`、`planName` 和 `extra`。Qoder 配额单位固定为 `credits`。
 
 对于已分配额度的 Key，返回该 Key 的分配额度、累计精确消耗和剩余额度。对于没有分配额度的 Key，返回所有启用 Qoder 账号及资源包的汇总可用额度。

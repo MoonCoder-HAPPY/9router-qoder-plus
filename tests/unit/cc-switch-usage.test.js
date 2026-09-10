@@ -187,4 +187,58 @@ describe("CC-Switch usage route", () => {
       unit: "credits",
     });
   });
+
+  it("returns 401 for an invalid key on /user/balance", async () => {
+    localDb.getApiKeyByValue.mockResolvedValueOnce(null);
+    const { GET } = await import("../../src/app/user/balance/route.js");
+    const response = await GET(new Request("http://localhost/user/balance", {
+      headers: { Authorization: "Bearer invalid" },
+    }));
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toMatchObject({
+      isValid: false,
+      is_active: false,
+      error: "Invalid API key",
+    });
+  });
+
+  it("returns is_active on the valid /user/balance alias", async () => {
+    localDb.getApiKeyByValue.mockResolvedValueOnce({
+      id: "key-1",
+      name: "desktop",
+      isActive: true,
+      policy: { enabled: false, providers: {} },
+    });
+    localDb.getProviderConnections.mockResolvedValueOnce([
+      {
+        id: "conn-a",
+        provider: "qoder",
+        name: "Account A",
+        accessToken: "token",
+        providerSpecificData: {},
+      },
+    ]);
+    const usage = await import("open-sse/services/usage.js");
+    usage.getUsageForProvider.mockResolvedValueOnce({
+      quotas: {
+        user: { total: 1000, used: 300, remaining: 700, unit: "credits" },
+        organization: { total: 0, used: 0, remaining: 0, unit: "credits" },
+      },
+    });
+
+    const { GET } = await import("../../src/app/user/balance/route.js");
+    const response = await GET(new Request("http://localhost/user/balance", {
+      headers: { Authorization: "Bearer valid" },
+    }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      isValid: true,
+      is_active: true,
+      balance: 700,
+      remaining: 700,
+      unit: "credits",
+    });
+  });
 });
