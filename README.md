@@ -26,6 +26,9 @@ Qoder 有时不是直接返回 HTTP 错误，而是在已经建立的 SSE 流中
 - SSE 首包 `403 / 10605 / isQueued:true` 会进入同一套排队重试。
 - SSE 首包 `504 / upstream model timeout` 会按临时失败重试。
 - 重试时刷新 `request_id`、`request_set_id`、`chat_record_id` 并重新签名，避免 Qoder 返回 `Duplicate request`。
+- 进入排队后会立即建立 SSE，并持续发送 keepalive，避免 Codex 在排队阶段因长时间无数据而主动终止。
+- Qoder 上游工具调用缺少 `id` 时会自动生成稳定 ID，不再静默丢失工具调用。
+- Responses API 中 reasoning、message、function call 使用独立递增的 `output_index`，避免 Codex 将工具调用误判为 reasoning 的重复输出。
 
 ### Qoder 超时参数可配置
 
@@ -36,6 +39,7 @@ Qoder 有时不是直接返回 HTTP 错误，而是在已经建立的 SSE 流中
 | `QODER_QUEUE_MAX_ATTEMPTS` | `15` | Qoder 排队最多重试次数 |
 | `QODER_QUEUE_BASE_DELAY_MS` | `5000` | 首次排队重试等待时间 |
 | `QODER_QUEUE_MAX_DELAY_MS` | `60000` | 单次排队重试最大等待时间 |
+| `QODER_KEEPALIVE_MS` | `10000` | 排队及流式静默期间发送 SSE keepalive 的间隔 |
 | `QODER_STREAM_TIMEOUT_MS` | `600000` | 等待 Qoder 返回响应头的超时时间 |
 | `QODER_STALL_TIMEOUT_MS` | `600000` | Qoder 流式响应两段字节之间的最大空闲时间 |
 
@@ -273,6 +277,7 @@ docker run -d \
   -e QODER_QUEUE_MAX_ATTEMPTS=15 \
   -e QODER_QUEUE_BASE_DELAY_MS=5000 \
   -e QODER_QUEUE_MAX_DELAY_MS=60000 \
+  -e QODER_KEEPALIVE_MS=10000 \
   -e QODER_STREAM_TIMEOUT_MS=600000 \
   -e QODER_STALL_TIMEOUT_MS=600000 \
   9router-qoder-plus:latest
@@ -312,6 +317,7 @@ services:
       QODER_QUEUE_MAX_ATTEMPTS: "15"
       QODER_QUEUE_BASE_DELAY_MS: "5000"
       QODER_QUEUE_MAX_DELAY_MS: "60000"
+      QODER_KEEPALIVE_MS: "10000"
       QODER_STREAM_TIMEOUT_MS: "600000"
       QODER_STALL_TIMEOUT_MS: "600000"
 ```
@@ -363,6 +369,7 @@ sudo docker run -d \
   -e INITIAL_PASSWORD='change-me' \
   -e NEXT_TELEMETRY_DISABLED=1 \
   -e TZ=Asia/Shanghai \
+  -e QODER_KEEPALIVE_MS=10000 \
   -e QODER_STREAM_TIMEOUT_MS=600000 \
   -e QODER_STALL_TIMEOUT_MS=600000 \
   9router-qoder-plus:latest

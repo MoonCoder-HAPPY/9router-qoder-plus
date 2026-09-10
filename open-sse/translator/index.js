@@ -250,9 +250,13 @@ export function initState(sourceFormat) {
       reasoningPartAdded: false,
       reasoningDone: false,
       inThinking: false,
+      nextOutputIndex: 0,
+      msgOutputIndex: {},
       funcArgsBuf: {},
       funcNames: {},
       funcCallIds: {},
+      funcOutputIndex: {},
+      funcItemAdded: {},
       funcArgsDone: {},
       funcItemDone: {},
       completedSent: false

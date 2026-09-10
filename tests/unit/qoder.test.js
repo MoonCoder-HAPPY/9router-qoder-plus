@@ -558,4 +558,32 @@ describe("wrapQoderSSE", () => {
     const wrapped = wrapQoderSSE(r, "qoder/auto");
     expect(wrapped).toBe(r);
   });
+
+  it("emits keepalive comments while the upstream stream is silent", async () => {
+    const upstream = new ReadableStream({
+      async start(controller) {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        const inner = JSON.stringify({
+          choices: [{ delta: { content: "ok" }, finish_reason: "stop" }],
+        });
+        controller.enqueue(
+          new TextEncoder().encode(
+            `data: ${JSON.stringify({ statusCodeValue: 200, body: inner })}\n\n`,
+          ),
+        );
+        controller.close();
+      },
+    });
+
+    const wrapped = wrapQoderSSE(
+      new Response(upstream, { status: 200 }),
+      "qoder/auto",
+      10,
+    );
+    const out = await drain(wrapped);
+
+    expect(out).toContain(": qoder stream keepalive");
+    expect(out).toContain('"content":"ok"');
+    expect(out).toContain("data: [DONE]\n\n");
+  });
 });

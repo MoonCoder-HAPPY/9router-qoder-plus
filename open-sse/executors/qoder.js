@@ -42,7 +42,8 @@ import { getQoderModelConfig, resolveQoderModels } from "../services/qoderModels
 // {"isQueued":true,"queueType":"slow",...} (error code 10605). The stock
 // pipeline treats any 403 as a hard account failure (2-minute lockout and
 // an immediate error to the client), which kills the Claude Code session.
-// Instead, we wait out the queue in-place with bounded retries.
+// Instead, we return an SSE response immediately, keep it alive, and retry
+// the queued request in the background with a bounded budget.
 const QUEUE_RETRY = {
   // Exponential backoff: attempt N waits min(base*N, max). With the defaults
   // below the cumulative wait before the last retry is ~10 minutes
@@ -52,6 +53,7 @@ const QUEUE_RETRY = {
   baseDelayMs: Number(process.env.QODER_QUEUE_BASE_DELAY_MS) || 5000,
   maxDelayMs: Number(process.env.QODER_QUEUE_MAX_DELAY_MS) || 60000,
 };
+const QODER_KEEPALIVE_MS = Number(process.env.QODER_KEEPALIVE_MS) || 10000;
 
 /**
  * Detect whether a 403 response is Qoder's soft "queued" rate limit.
@@ -166,6 +168,20 @@ async function peekStreamQueueInfo(response) {
   }
 }
 
+async function inspectQoderResponse(response) {
+  if (response.status === 403) {
+    const info = await readQueueInfo(response);
+    return { ...info, source: "http", response: info.queued ? null : response };
+  }
+
+  if (response.ok) {
+    const peeked = await peekStreamQueueInfo(response);
+    return { ...peeked, source: "stream" };
+  }
+
+  return { queued: false, queueCount: null, source: "http", response };
+}
+
 const sleep = (ms, signal) =>
   new Promise((resolve, reject) => {
     const t = setTimeout(resolve, ms);
@@ -180,6 +196,152 @@ const sleep = (ms, signal) =>
       );
     }
   });
+
+function createQoderQueueRetryResponse({
+  initialQueueInfo,
+  model,
+  signal,
+  log,
+  doFetch,
+  retryOptions = QUEUE_RETRY,
+  keepaliveMs = QODER_KEEPALIVE_MS,
+  sleepFn = sleep,
+}) {
+  const encoder = new TextEncoder();
+  let stopped = false;
+  let keepaliveTimer = null;
+  let currentReader = null;
+
+  return new Response(
+    new ReadableStream({
+      async start(controller) {
+        const write = (value) => {
+          if (stopped) return;
+          try {
+            controller.enqueue(
+              typeof value === "string" ? encoder.encode(value) : value,
+            );
+          } catch {
+            stopped = true;
+          }
+        };
+        const keepalive = () => write(`: qoder queue keepalive ${Date.now()}\n\n`);
+        const error = (message) => {
+          const chunk = JSON.stringify({
+            id: `qoder-error-${Date.now()}`,
+            object: "chat.completion.chunk",
+            created: Math.floor(Date.now() / 1000),
+            model,
+            choices: [
+              {
+                index: 0,
+                delta: { content: `\n[qoder error: ${truncate(message, 300)}]` },
+                finish_reason: "stop",
+              },
+            ],
+          });
+          write(`data: ${chunk}\n\n${SSE_DONE}`);
+        };
+
+        keepalive();
+        keepaliveTimer = setInterval(keepalive, Math.max(1000, keepaliveMs));
+
+        let queueInfo = initialQueueInfo;
+        let attempt = 0;
+
+        try {
+          while (queueInfo?.queued) {
+            if (attempt >= retryOptions.maxAttempts) {
+              log?.warn?.(
+                "QODER",
+                `queue retry limit reached after ${attempt}/${retryOptions.maxAttempts} attempts`,
+              );
+              error("queue retry limit reached");
+              return;
+            }
+
+            attempt++;
+            const delay = Math.min(
+              retryOptions.baseDelayMs * attempt,
+              retryOptions.maxDelayMs,
+            );
+            log?.info?.(
+              "QODER",
+              `${queueInfo.reason || "queued"} via ${queueInfo.source || "stream"} (position ${queueInfo.queueCount ?? "?"}), retry ${attempt}/${retryOptions.maxAttempts} in ${Math.round(delay / 1000)}s`,
+            );
+
+            await sleepFn(delay, signal);
+
+            let response;
+            try {
+              response = await doFetch(true);
+            } catch (err) {
+              error(`retry failed: ${err.message}`);
+              return;
+            }
+
+            const inspected = await inspectQoderResponse(response);
+            queueInfo = inspected;
+
+            if (queueInfo.queued) continue;
+            if (!inspected.response?.ok) {
+              let message = `upstream status ${inspected.response?.status || 502}`;
+              try {
+                const text = await inspected.response.text();
+                if (text) message = text;
+              } catch {}
+              error(message);
+              return;
+            }
+
+            const wrapped = wrapQoderSSE(inspected.response, model);
+            if (!wrapped.body) {
+              error("upstream returned an empty stream");
+              return;
+            }
+
+            currentReader = wrapped.body.getReader();
+            while (!stopped) {
+              const { done, value } = await currentReader.read();
+              if (done) break;
+              write(value);
+            }
+            return;
+          }
+
+          error("queue wait completed without an upstream response");
+        } catch (err) {
+          if (!stopped) error(err.message || String(err));
+        } finally {
+          if (keepaliveTimer) {
+            clearInterval(keepaliveTimer);
+            keepaliveTimer = null;
+          }
+          if (!stopped) controller.close();
+        }
+      },
+      async cancel(reason) {
+        stopped = true;
+        if (keepaliveTimer) {
+          clearInterval(keepaliveTimer);
+          keepaliveTimer = null;
+        }
+        try {
+          await currentReader?.cancel(reason);
+        } catch {}
+      },
+    }),
+    {
+      status: 200,
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+      },
+    },
+  );
+}
 // ============ end 9router-fix patch ============
 
 /**
@@ -433,13 +595,15 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
  * and re-emit as `data: <inner>\n\n`. Errors become `data: [DONE]\n\n` plus
  * a synthetic OpenAI error chunk.
  */
-function wrapQoderSSE(response, model) {
+function wrapQoderSSE(response, model, keepaliveMs = QODER_KEEPALIVE_MS) {
   if (!response.ok || !response.body) return response;
 
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   let buffer = "";
   let doneEmitted = false;
+  let keepaliveTimer = null;
+  let reader = null;
 
   // Process one already-extracted SSE line (no trailing newline). Returns
   // false when the line indicated end-of-stream so the caller can stop
@@ -489,44 +653,89 @@ function wrapQoderSSE(response, model) {
     controller.enqueue(encoder.encode(`data: ${sanitized}\n\n`));
   };
 
-  const transform = new TransformStream({
-    transform(chunk, controller) {
-      buffer += decoder.decode(chunk, { stream: true });
-      let nl;
-      while ((nl = buffer.indexOf("\n")) !== -1) {
-        const line = buffer.slice(0, nl);
-        buffer = buffer.slice(nl + 1);
-        processLine(line, controller);
+  const transformed = new ReadableStream({
+    async start(controller) {
+      reader = response.body.getReader();
+      const writeKeepalive = () => {
+        if (!doneEmitted) {
+          try {
+            controller.enqueue(encoder.encode(`: qoder stream keepalive ${Date.now()}\n\n`));
+          } catch {}
+        }
+      };
+      keepaliveTimer = setInterval(
+        writeKeepalive,
+        Math.max(10, keepaliveMs),
+      );
+
+      let failure = null;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let nl;
+          while ((nl = buffer.indexOf("\n")) !== -1) {
+            const line = buffer.slice(0, nl);
+            buffer = buffer.slice(nl + 1);
+            processLine(line, controller);
+            if (doneEmitted) break;
+          }
+          if (doneEmitted) {
+            try { await reader.cancel("qoder stream done"); } catch {}
+            break;
+          }
+        }
+
+        buffer += decoder.decode();
+        if (buffer.length > 0) {
+          processLine(buffer, controller);
+          buffer = "";
+        }
+        if (!doneEmitted) {
+          controller.enqueue(encoder.encode(SSE_DONE));
+          doneEmitted = true;
+        }
+      } catch (err) {
+        if (!doneEmitted) failure = err;
+      } finally {
+        if (keepaliveTimer) {
+          clearInterval(keepaliveTimer);
+          keepaliveTimer = null;
+        }
+      }
+
+      if (failure) {
+        try { controller.error(failure); } catch {}
+      } else {
+        try { controller.close(); } catch {}
       }
     },
-    flush(controller) {
-      // Finalize the decoder so any pending multi-byte sequence is
-      // released into `buffer` instead of being silently dropped.
-      buffer += decoder.decode();
-      // Drain any trailing line that arrived without a terminating newline
-      // (e.g. upstream closed the socket immediately after the last write,
-      // or a CDN stripped the final CRLF). Without this, the chunk that
-      // carries finish_reason is silently lost.
-      if (buffer.length > 0) {
-        processLine(buffer, controller);
-        buffer = "";
+    async cancel(reason) {
+      if (keepaliveTimer) {
+        clearInterval(keepaliveTimer);
+        keepaliveTimer = null;
       }
-      if (!doneEmitted) {
-        controller.enqueue(encoder.encode(SSE_DONE));
-        doneEmitted = true;
-      }
+      try {
+        await reader?.cancel(reason);
+      } catch {}
     },
   });
 
-  const transformed = response.body.pipeThrough(transform);
-  // Build a Response with passable headers; the streaming handler reads
-  // `.body` as a ReadableStream regardless of Content-Type.
+  /*
+   * The manual reader above replaces the previous TransformStream so it can
+   * emit comment frames while the upstream is silent. Codex's default SSE
+   * idle timeout is only five minutes, while Qoder can legitimately pause for
+   * longer during model scheduling.
+   */
   return new Response(transformed, {
     status: response.status,
     statusText: response.statusText,
     headers: {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+      "X-Accel-Buffering": "no",
     },
   });
 }
@@ -641,14 +850,10 @@ export class QoderExecutor extends BaseExecutor {
       return { response: fakeResp, url, headers: {}, transformedBody: body };
     }
 
-    // Abort if upstream doesn't return response headers within connect timeout.
     const timeoutMs = this.config?.timeoutMs || FETCH_CONNECT_TIMEOUT_MS;
-    const connectCtrl = new AbortController();
-    const connectTimer = setTimeout(() => connectCtrl.abort(new Error("fetch connect timeout")), timeoutMs);
-    const mergedSignal = signal ? AbortSignal.any([signal, connectCtrl.signal]) : connectCtrl.signal;
 
-    // 9router-fix: the whole fetch lives in a helper so the queue-retry
-    // loop below can re-issue the exact same signed request.
+    // 9router-fix: the whole fetch lives in a helper so the queue stream can
+    // re-issue the exact same signed request after a retry delay.
     const doFetch = async (refreshIds = false) => {
       if (refreshIds) currentAttemptRequest = makeAttemptRequest(true);
       const ctrl = new AbortController();
@@ -666,47 +871,25 @@ export class QoderExecutor extends BaseExecutor {
     };
 
     let response = await doFetch();
+    const inspected = await inspectQoderResponse(response);
 
-    // 9router-fix: Qoder queue-aware retry. Qoder may report the same soft
-    // queue either as an HTTP 403 response or as the first SSE envelope inside
-    // an HTTP 200 stream. Retry both before returning anything to the client.
-    for (let attempt = 1; attempt <= QUEUE_RETRY.maxAttempts; attempt++) {
-      let queueInfo = { queued: false, queueCount: null };
-      let source = "http";
-      if (response.status === 403) {
-        queueInfo = await readQueueInfo(response);
-      } else if (response.ok) {
-        const peeked = await peekStreamQueueInfo(response);
-        if (!peeked.queued) {
-          response = peeked.response;
-          break;
-        }
-        queueInfo = peeked;
-        source = "stream";
-      }
-      if (!queueInfo.queued) break; // hard 403 or normal stream → original path
-      const delay = Math.min(QUEUE_RETRY.baseDelayMs * attempt, QUEUE_RETRY.maxDelayMs);
-      log?.info?.(
-        "QODER",
-        `${queueInfo.reason || "queued"} via ${source} (position ${queueInfo.queueCount ?? "?"}), retry ${attempt}/${QUEUE_RETRY.maxAttempts} in ${Math.round(delay / 1000)}s`,
-      );
-      try {
-        await sleep(delay, mergedSignal);
-      } catch {
-        break; // client disconnected — stop retrying
-      }
-      try {
-        response = await doFetch(true);
-      } catch (err) {
-        const fakeResp = new Response(
-          JSON.stringify({ error: { message: `qoder retry signing/fetch failed: ${err.message}` } }),
-          { status: 502, headers: { "Content-Type": "application/json" } },
-        );
-        response = fakeResp;
-        break;
-      }
+    if (inspected.queued) {
+      const queued = createQoderQueueRetryResponse({
+        initialQueueInfo: inspected,
+        model: `qoder/${qoderKey}`,
+        signal,
+        log,
+        doFetch,
+      });
+      return {
+        response: queued,
+        url,
+        headers: currentAttemptRequest.headers,
+        transformedBody: currentAttemptRequest.payload,
+      };
     }
-    // end 9router-fix
+
+    response = inspected.response;
 
     if (!response.ok) {
       // Pass error response through unchanged so chatCore can capture it.
@@ -738,4 +921,5 @@ export const __test__ = {
   validateQoderImageSupport,
   wrapQoderSSE,
   buildQoderRequestBody,
+  createQoderQueueRetryResponse,
 };

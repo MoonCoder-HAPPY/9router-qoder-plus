@@ -122,7 +122,7 @@ export function openaiToOpenAIResponsesResponse(chunk, state) {
 function startReasoning(state, emit, idx) {
   if (!state.reasoningId) {
     state.reasoningId = `rs_${state.responseId}_${idx}`;
-    state.reasoningIndex = idx;
+    state.reasoningIndex = state.nextOutputIndex++;
     
     emit("response.output_item.added", {
       type: "response.output_item.added",
@@ -186,13 +186,19 @@ function closeReasoning(state, emit) {
 }
 
 function emitTextContent(state, emit, idx, content) {
+  if (state.msgOutputIndex?.[idx] == null) {
+    state.msgOutputIndex ||= {};
+    state.msgOutputIndex[idx] = state.nextOutputIndex++;
+  }
+  const outputIndex = state.msgOutputIndex[idx];
+
   if (!state.msgItemAdded[idx]) {
     state.msgItemAdded[idx] = true;
     const msgId = `msg_${state.responseId}_${idx}`;
     
     emit("response.output_item.added", {
       type: "response.output_item.added",
-      output_index: idx,
+      output_index: outputIndex,
       item: { id: msgId, type: RESPONSES_ITEM.MESSAGE, content: [], role: ROLE.ASSISTANT }
     });
   }
@@ -203,7 +209,7 @@ function emitTextContent(state, emit, idx, content) {
     emit("response.content_part.added", {
       type: "response.content_part.added",
       item_id: `msg_${state.responseId}_${idx}`,
-      output_index: idx,
+      output_index: outputIndex,
       content_index: 0,
       part: { type: RESPONSES_ITEM.OUTPUT_TEXT, annotations: [], logprobs: [], text: "" }
     });
@@ -212,7 +218,7 @@ function emitTextContent(state, emit, idx, content) {
   emit("response.output_text.delta", {
     type: "response.output_text.delta",
     item_id: `msg_${state.responseId}_${idx}`,
-    output_index: idx,
+    output_index: outputIndex,
     content_index: 0,
     delta: content,
     logprobs: []
@@ -227,11 +233,12 @@ function closeMessage(state, emit, idx) {
     state.msgItemDone[idx] = true;
     const fullText = state.msgTextBuf[idx] || "";
     const msgId = `msg_${state.responseId}_${idx}`;
+    const outputIndex = state.msgOutputIndex?.[idx] ?? parseInt(idx);
 
     emit("response.output_text.done", {
       type: "response.output_text.done",
       item_id: msgId,
-      output_index: parseInt(idx),
+      output_index: outputIndex,
       content_index: 0,
       text: fullText,
       logprobs: []
@@ -240,14 +247,14 @@ function closeMessage(state, emit, idx) {
     emit("response.content_part.done", {
       type: "response.content_part.done",
       item_id: msgId,
-      output_index: parseInt(idx),
+      output_index: outputIndex,
       content_index: 0,
       part: { type: RESPONSES_ITEM.OUTPUT_TEXT, annotations: [], logprobs: [], text: fullText }
     });
 
     emit("response.output_item.done", {
       type: "response.output_item.done",
-      output_index: parseInt(idx),
+      output_index: outputIndex,
       item: {
         id: msgId,
         type: RESPONSES_ITEM.MESSAGE,
@@ -265,17 +272,31 @@ function emitToolCall(state, emit, tc) {
 
   if (funcName) state.funcNames[tcIdx] = funcName;
 
-  if (!state.funcCallIds[tcIdx] && newCallId) {
-    state.funcCallIds[tcIdx] = newCallId;
-    
+  if (state.funcOutputIndex?.[tcIdx] == null) {
+    state.funcOutputIndex ||= {};
+    state.funcOutputIndex[tcIdx] = state.nextOutputIndex++;
+  }
+  const outputIndex = state.funcOutputIndex[tcIdx];
+
+  // Some OpenAI-compatible providers stream the function name and arguments
+  // without a tool-call id. Dropping that call makes Codex finish the turn
+  // after the model's preamble instead of executing the tool.
+  if (!state.funcCallIds[tcIdx]) {
+    state.funcCallIds[tcIdx] = newCallId || fallbackToolCallId(tcIdx);
+  }
+
+  if (!state.funcItemAdded?.[tcIdx]) {
+    state.funcItemAdded ||= {};
+    state.funcItemAdded[tcIdx] = true;
+    const callId = state.funcCallIds[tcIdx];
     emit("response.output_item.added", {
       type: "response.output_item.added",
-      output_index: tcIdx,
+      output_index: outputIndex,
       item: {
-        id: `fc_${newCallId}`,
+        id: `fc_${callId}`,
         type: RESPONSES_ITEM.FUNCTION_CALL,
         arguments: "",
-        call_id: newCallId,
+        call_id: callId,
         name: state.funcNames[tcIdx] || ""
       }
     });
@@ -283,35 +304,56 @@ function emitToolCall(state, emit, tc) {
 
   if (!state.funcArgsBuf[tcIdx]) state.funcArgsBuf[tcIdx] = "";
 
-  if (tc.function?.arguments) {
-    const refCallId = state.funcCallIds[tcIdx] || newCallId;
-    if (refCallId) {
-      emit("response.function_call_arguments.delta", {
-        type: "response.function_call_arguments.delta",
-        item_id: `fc_${refCallId}`,
-        output_index: tcIdx,
-        delta: tc.function.arguments
-      });
-    }
-    state.funcArgsBuf[tcIdx] += tc.function.arguments;
+  const rawArgs = tc.function?.arguments;
+  const argsDelta = typeof rawArgs === "string"
+    ? rawArgs
+    : rawArgs == null
+      ? ""
+      : JSON.stringify(rawArgs);
+
+  if (argsDelta) {
+    const refCallId = state.funcCallIds[tcIdx];
+    emit("response.function_call_arguments.delta", {
+      type: "response.function_call_arguments.delta",
+      item_id: `fc_${refCallId}`,
+      output_index: outputIndex,
+      delta: argsDelta
+    });
+    state.funcArgsBuf[tcIdx] += argsDelta;
   }
 }
 
 function closeToolCall(state, emit, idx) {
   const callId = state.funcCallIds[idx];
   if (callId && !state.funcItemDone[idx]) {
+    const outputIndex = state.funcOutputIndex?.[idx] ?? parseInt(idx);
+    if (!state.funcItemAdded?.[idx]) {
+      state.funcItemAdded ||= {};
+      state.funcItemAdded[idx] = true;
+      emit("response.output_item.added", {
+        type: "response.output_item.added",
+        output_index: outputIndex,
+        item: {
+          id: `fc_${callId}`,
+          type: RESPONSES_ITEM.FUNCTION_CALL,
+          arguments: "",
+          call_id: callId,
+          name: state.funcNames[idx] || ""
+        }
+      });
+    }
     const args = state.funcArgsBuf[idx] || "{}";
     
     emit("response.function_call_arguments.done", {
       type: "response.function_call_arguments.done",
       item_id: `fc_${callId}`,
-      output_index: parseInt(idx),
+      output_index: outputIndex,
       arguments: args
     });
 
     emit("response.output_item.done", {
       type: "response.output_item.done",
-      output_index: parseInt(idx),
+      output_index: outputIndex,
       item: {
         id: `fc_${callId}`,
         type: RESPONSES_ITEM.FUNCTION_CALL,
