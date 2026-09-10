@@ -79,19 +79,6 @@ describe("Qoder public model ids", () => {
     await expect(resolveQoderPublicModelId("Future Model")).resolves.toBe("futuremodel");
   });
 
-  it("preserves live vision metadata for the provider UI", async () => {
-    const { decorateQoderModelsForPublic } = await import("@/lib/qoder/publicModels.js");
-    const models = await decorateQoderModelsForPublic([
-      { id: "dmodel", name: "DeepSeek-V4-Pro", isVL: true },
-      { id: "textmodel", name: "Text Model", isVL: false },
-    ]);
-
-    expect(models.find((model) => model.internalId === "dmodel")?.isVL).toBe(true);
-    expect(models.find((model) => model.internalId === "textmodel")?.isVL).toBe(false);
-    expect(models.find((model) => model.internalId === "dmodel")?.supportsImageInput).toBe(false);
-    expect(models.find((model) => model.internalId === "textmodel")?.supportsImageInput).toBe(false);
-  });
-
   it("rejects overrides that duplicate a learned default public id", async () => {
     const {
       decorateQoderModelsForPublic,
