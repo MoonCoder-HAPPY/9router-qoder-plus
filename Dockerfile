@@ -34,6 +34,7 @@ ENV PORT=20128
 ENV HOSTNAME=0.0.0.0
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV DATA_DIR=/app/data
+ENV TZ=Asia/Shanghai
 
 ENV QODER_QUEUE_MAX_ATTEMPTS=15
 ENV QODER_QUEUE_BASE_DELAY_MS=5000
@@ -59,7 +60,9 @@ RUN mkdir -p /app/data && chown -R node:node /app && \
 
 # Fix permissions at runtime (handles mounted volumes)
 RUN sed -i 's#dl-cdn.alpinelinux.org#mirrors.aliyun.com#g' /etc/apk/repositories && \
-  apk --no-cache upgrade && apk --no-cache add su-exec && \
+  apk --no-cache upgrade && apk --no-cache add su-exec tzdata && \
+  ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && \
+  echo "$TZ" > /etc/timezone && \
   printf '#!/bin/sh\nchown -R node:node /app/data /app/data-home 2>/dev/null\nexec su-exec node "$@"\n' > /entrypoint.sh && \
   chmod +x /entrypoint.sh
 
