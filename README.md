@@ -4,8 +4,6 @@
 
 原项目 9Router 是一个面向 Claude Code、Codex、Cursor、Cline、OpenCode 等 AI 编程工具的本地/自部署 AI Router，提供 OpenAI-compatible API、Claude/OpenAI 格式转换、多 Provider 管理、额度追踪、RTK Token Saver、Fallback/Combo 路由等能力。
 
-## 这版改了什么
-
 ### Qoder 排队不中断
 
 针对 Qoder 在高峰期常见的排队响应做了增强：
