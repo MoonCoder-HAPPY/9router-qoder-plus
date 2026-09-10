@@ -202,6 +202,12 @@ export async function proxy(request) {
     return NextResponse.json({ error: "API key required for remote API access" }, { status: 401 });
   }
 
+  // CC-Switch usage is authenticated by the route itself with the client API key.
+  // Keep it exact so Dashboard usage subroutes remain protected.
+  if (pathname === "/api/usage" && request.method === "POST") {
+    return NextResponse.next();
+  }
+
   // Deny-by-default for /api/* — public allow-list bypasses, everything else requires auth.
   if (pathname.startsWith("/api/")) {
     if (isPublicApi(pathname)) return NextResponse.next();

@@ -175,6 +175,13 @@ function convertClaudeMessage(msg) {
                 url: encodeDataUri(block.source.media_type, block.source.data)
               }
             });
+          } else if (block.source?.type === "url" && block.source.url) {
+            parts.push({
+              type: OPENAI_BLOCK.IMAGE_URL,
+              image_url: {
+                url: block.source.url
+              }
+            });
           }
           break;
 
@@ -191,13 +198,35 @@ function convertClaudeMessage(msg) {
 
         case CLAUDE_BLOCK.TOOL_RESULT:
           let resultContent = "";
+          const resultImages = [];
           if (typeof block.content === "string") {
             resultContent = block.content;
           } else if (Array.isArray(block.content)) {
-            resultContent = block.content
+            const textContent = block.content
               .filter(c => c.type === CLAUDE_BLOCK.TEXT)
               .map(c => c.text)
-              .join("\n") || JSON.stringify(block.content);
+              .join("\n");
+            for (const contentBlock of block.content) {
+              if (contentBlock.type !== CLAUDE_BLOCK.IMAGE) continue;
+              if (contentBlock.source?.type === "base64") {
+                resultImages.push({
+                  type: OPENAI_BLOCK.IMAGE_URL,
+                  image_url: {
+                    url: encodeDataUri(contentBlock.source.media_type, contentBlock.source.data)
+                  }
+                });
+              } else if (contentBlock.source?.type === "url" && contentBlock.source.url) {
+                resultImages.push({
+                  type: OPENAI_BLOCK.IMAGE_URL,
+                  image_url: {
+                    url: contentBlock.source.url
+                  }
+                });
+              }
+            }
+            resultContent = textContent || (resultImages.length > 0
+              ? "[Image output attached below]"
+              : JSON.stringify(block.content));
           } else if (block.content) {
             resultContent = JSON.stringify(block.content);
           }
@@ -205,7 +234,8 @@ function convertClaudeMessage(msg) {
           toolResults.push({
             role: ROLE.TOOL,
             tool_call_id: block.tool_use_id,
-            content: resultContent
+            content: resultContent,
+            ...(resultImages.length > 0 ? { _imageParts: resultImages } : {})
           });
           break;
       }
@@ -213,10 +243,26 @@ function convertClaudeMessage(msg) {
 
     // If has tool results, return array of tool messages
     if (toolResults.length > 0) {
-      if (parts.length > 0) {
-        return [...toolResults, { role: ROLE.USER, content: collapseTextParts(parts) }];
-      }
-      return toolResults;
+      const imageMessages = [];
+      const cleanToolResults = toolResults.map(({ _imageParts, ...tool }) => {
+        if (_imageParts?.length > 0) {
+          imageMessages.push({
+            role: ROLE.USER,
+            content: [
+              {
+                type: OPENAI_BLOCK.TEXT,
+                text: `Image output from tool call ${tool.tool_call_id}`
+              },
+              ..._imageParts
+            ]
+          });
+        }
+        return tool;
+      });
+      const trailingMessages = parts.length > 0
+        ? [{ role: ROLE.USER, content: collapseTextParts(parts) }]
+        : [];
+      return [...cleanToolResults, ...imageMessages, ...trailingMessages];
     }
 
     // If has tool calls, return assistant message with tool_calls

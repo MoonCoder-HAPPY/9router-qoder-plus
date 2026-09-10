@@ -8,6 +8,54 @@ const R2O = (body) => translateRequest(FORMATS.OPENAI_RESPONSES, FORMATS.OPENAI,
 const O2R = (body) => translateRequest(FORMATS.OPENAI, FORMATS.OPENAI_RESPONSES, "m", body, true, null, null);
 
 describe("Codex CLI Responses → OpenAI", () => {
+  it("preserves a direct input_image data URL", () => {
+    const url = "data:image/png;base64,AAA";
+    const out = R2O({
+      input: [{ type: "message", role: "user", content: [
+        { type: "input_text", text: "look" },
+        { type: "input_image", image_url: url, detail: "high" },
+      ] }],
+    });
+    const image = out.messages[0].content.find((c) => c.type === "image_url");
+    expect(image.image_url).toEqual({ url, detail: "high" });
+  });
+
+  it("preserves function_call_output image arrays", () => {
+    const out = R2O({
+      input: [
+        { type: "function_call", call_id: "call_1", name: "screenshot", arguments: "{}" },
+        { type: "function_call_output", call_id: "call_1", output: [
+          { type: "input_text", text: "captured" },
+          { type: "input_image", image_url: "data:image/png;base64,AAA" },
+        ] },
+      ],
+    });
+    const tool = out.messages.find((m) => m.role === "tool");
+    const imageMsg = out.messages.find((m) =>
+      Array.isArray(m.content) && m.content.some((c) => c.type === "image_url")
+    );
+    expect(tool.content).toBe("captured");
+    expect(imageMsg.content[0].text).toContain("call_1");
+    expect(imageMsg.content[1].image_url.url).toBe("data:image/png;base64,AAA");
+  });
+
+  it("keeps all tool results before tool-result images", () => {
+    const out = R2O({
+      input: [
+        { type: "function_call", call_id: "call_1", name: "shot_a", arguments: "{}" },
+        { type: "function_call", call_id: "call_2", name: "shot_b", arguments: "{}" },
+        { type: "function_call_output", call_id: "call_1", output: [
+          { type: "input_image", image_url: "data:image/png;base64,AAA" },
+        ] },
+        { type: "function_call_output", call_id: "call_2", output: [
+          { type: "input_image", image_url: "data:image/png;base64,BBB" },
+        ] },
+      ],
+    });
+    const roles = out.messages.map((m) => m.role);
+    expect(roles).toEqual(["assistant", "tool", "tool", "user", "user"]);
+  });
+
   // openai-responses.js:103 — function_call with empty name skipped, can leave tool_calls: []
   // KNOWN BUG: empty tool_calls array is rejected by OpenAI/Codex
   it.fails("assistant has no empty tool_calls array when all names are empty", () => {
@@ -30,18 +78,15 @@ describe("Codex CLI Responses → OpenAI", () => {
     expect(typeof asst.tool_calls[0].function.arguments).toBe("string");
   });
 
-  // openai-responses.js:75-77 — input_image uses file_id as raw url
-  // KNOWN BUG
-  it.fails("input_image with file_id is not used as a raw url", () => {
+  it("does not use file_id as a raw image URL", () => {
     const out = R2O({
       input: [{ type: "message", role: "user", content: [
         { type: "input_image", file_id: "file-abc" },
       ] }],
     });
     const userMsg = out.messages.find((m) => m.role === "user");
-    const img = Array.isArray(userMsg?.content) ? userMsg.content.find((c) => c.type === "image_url") : null;
-    // A bare file_id is not a valid image URL
-    expect(img?.image_url?.url === "file-abc").toBe(false);
+    const img = userMsg.content.find((c) => c.type === "image_url");
+    expect(img.image_url.url).toBe("");
   });
 });
 

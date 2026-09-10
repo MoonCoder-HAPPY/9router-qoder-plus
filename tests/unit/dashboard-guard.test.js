@@ -35,13 +35,14 @@ vi.mock("@/lib/auth/dashboardSession", () => ({
 
 const { proxy, __test__ } = await import("../../src/dashboardGuard.js");
 
-function request(pathname, headers = {}) {
+function request(pathname, headers = {}, method = "GET") {
   const normalizedHeaders = new Headers(headers);
   return {
     nextUrl: { pathname, searchParams: new URL(`http://localhost${pathname}`).searchParams },
     headers: normalizedHeaders,
     cookies: { get: vi.fn(() => undefined) },
     url: `http://localhost${pathname}`,
+    method,
   };
 }
 
@@ -59,6 +60,19 @@ describe("dashboard guard public LLM API access", () => {
 
     expect(response).toBe(mocks.nextResponse);
     expect(mocks.validateApiKey).not.toHaveBeenCalled();
+  });
+
+  it("allows the exact CC-Switch usage POST through route-level API key auth", async () => {
+    const response = await proxy(request("/api/usage", { host: "router.example.com" }, "POST"));
+
+    expect(response).toBe(mocks.nextResponse);
+  });
+
+  it("keeps dashboard usage routes protected", async () => {
+    const response = await proxy(request("/api/usage/stats", { host: "router.example.com" }));
+
+    expect(response.status).toBe(401);
+    expect(response.body.error).toBe("Unauthorized");
   });
 
   it("rejects remote Host-spoof when real peer IP is non-loopback", async () => {

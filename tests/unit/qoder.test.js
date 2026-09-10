@@ -366,6 +366,98 @@ describe("normalizeMessages", () => {
     const result = normalizeMessages([]);
     expect(result.messages).toEqual([]);
     expect(result.systemText).toBe("");
+    expect(result.imageCount).toBe(0);
+    expect(result.invalidImageCount).toBe(0);
+  });
+
+  it("preserves a user image in Qoder contents", () => {
+    const result = normalizeMessages([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "describe" },
+          { type: "image_url", image_url: { url: "data:image/png;base64,AAA" } },
+        ],
+      },
+    ]);
+
+    expect(result.imageCount).toBe(1);
+    expect(result.messages[0]).toMatchObject({
+      role: "user",
+      content: "",
+      contents: [
+        { type: "image_url", image_url: { url: "data:image/png;base64,AAA" } },
+        { type: "text", text: "describe" },
+      ],
+    });
+  });
+
+  it("preserves multiple images in source order before the text part", () => {
+    const result = normalizeMessages([
+      {
+        role: "user",
+        content: [
+          { type: "image_url", image_url: { url: "data:image/png;base64,AAA" } },
+          { type: "text", text: "compare" },
+          { type: "image_url", image_url: { url: "data:image/png;base64,BBB" } },
+        ],
+      },
+    ]);
+
+    expect(result.imageCount).toBe(2);
+    expect(result.messages[0].contents).toEqual([
+      { type: "image_url", image_url: { url: "data:image/png;base64,AAA" } },
+      { type: "image_url", image_url: { url: "data:image/png;base64,BBB" } },
+      { type: "text", text: "compare" },
+    ]);
+  });
+
+  it("tracks image parts with no valid URL", () => {
+    const result = normalizeMessages([
+      {
+        role: "user",
+        content: [
+          { type: "image_url", image_url: { url: "" } },
+          { type: "image_url", image_url: { url: "ftp://example.com/a.png" } },
+        ],
+      },
+    ]);
+
+    expect(result.imageCount).toBe(2);
+    expect(result.invalidImageCount).toBe(2);
+  });
+});
+
+describe("validateQoderImageSupport", () => {
+  const { validateQoderImageSupport } = qoderExecutorInternals;
+
+  it("rejects images for a non-vision model", () => {
+    expect(() => validateQoderImageSupport({
+      modelConfig: { key: "text-only", is_vl: false },
+      imageCount: 1,
+    })).toThrow(/does not support image input/i);
+  });
+
+  it("rejects DeepSeek images even when Qoder metadata says is_vl true", () => {
+    expect(() => validateQoderImageSupport({
+      modelConfig: { key: "dmodel", is_vl: true },
+      imageCount: 1,
+    })).toThrow(/does not support image input/i);
+  });
+
+  it("accepts live vision metadata when images are present", () => {
+    expect(validateQoderImageSupport({
+      modelConfig: { key: "vision", is_vl: true },
+      imageCount: 2,
+    })).toEqual({ key: "vision", is_vl: true });
+  });
+
+  it("rejects an image part without a valid URL", () => {
+    expect(() => validateQoderImageSupport({
+      modelConfig: { key: "vision", is_vl: true },
+      imageCount: 1,
+      invalidImageCount: 1,
+    })).toThrow(/valid image_url/i);
   });
 });
 

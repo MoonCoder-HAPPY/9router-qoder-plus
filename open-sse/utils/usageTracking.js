@@ -131,6 +131,8 @@ export function normalizeUsage(usage) {
   assignNumber("cache_creation_input_tokens", usage?.cache_creation_input_tokens);
   assignNumber("cached_tokens", usage?.cached_tokens);
   assignNumber("reasoning_tokens", usage?.reasoning_tokens);
+  assignNumber("credits", usage?.credits);
+  assignNumber("original_credits", usage?.original_credits);
 
   // Preserve nested details objects for OpenAI format forwarding
   if (usage?.prompt_tokens_details && typeof usage.prompt_tokens_details === "object") {
@@ -203,6 +205,10 @@ export function canonicalizeUsage(usage) {
     cache_creation_input_tokens: cacheCreation,
   };
   if (reasoning > 0) result.reasoning_tokens = reasoning;
+  const credits = Number(usage.credits);
+  if (Number.isFinite(credits)) result.credits = credits;
+  const originalCredits = Number(usage.original_credits);
+  if (Number.isFinite(originalCredits)) result.original_credits = originalCredits;
   return result;
 }
 
@@ -279,6 +285,8 @@ export function extractUsage(chunk) {
       completion_tokens: chunk.usage.completion_tokens || 0,
       cached_tokens: chunk.usage.prompt_tokens_details?.cached_tokens || chunk.usage.prompt_cache_hit_tokens,
       reasoning_tokens: chunk.usage.completion_tokens_details?.reasoning_tokens,
+      credits: chunk.usage.credits,
+      original_credits: chunk.usage.original_credits,
       prompt_tokens_details: chunk.usage.prompt_tokens_details,
       completion_tokens_details: chunk.usage.completion_tokens_details
     });

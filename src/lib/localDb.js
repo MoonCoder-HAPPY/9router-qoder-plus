@@ -10,7 +10,7 @@ export {
   createProviderNode, updateProviderNode, deleteProviderNode,
   getProxyPools, getProxyPoolById,
   createProxyPool, updateProxyPool, deleteProxyPool,
-  getApiKeys, getApiKeyById, getApiKeyByValue, getOtherApiKeyPolicies, updateApiKeyQoderCreditUsageLedger, resetApiKeyQoderCreditUsage,
+  getApiKeys, getApiKeyById, getApiKeyByValue, getOtherApiKeyPolicies, updateApiKeyQoderCreditUsageLedger, recordApiKeyQoderCreditUsage, resetApiKeyQoderCreditUsage,
   createApiKey, updateApiKey, deleteApiKey, validateApiKey,
   getCombos, getComboById, getComboByName,
   createCombo, updateCombo, deleteCombo,

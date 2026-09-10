@@ -22,6 +22,7 @@
 
 import { qoderEncodeBody } from "../shared/qoder/encoding.js";
 import { buildCosyHeaders } from "../shared/qoder/cosy.js";
+import { supportsQoderImageInput } from "../shared/qoder/vision.js";
 import { v4 as uuidv4 } from "uuid";
 import { createHash } from "crypto";
 
@@ -183,35 +184,72 @@ const sleep = (ms, signal) =>
 
 /**
  * Hoist role:"system" messages out of the messages array (Qoder rejects
- * system in messages) and flatten any multipart content arrays.
+ * system in messages) and convert multipart image content to Qoder's shape.
  */
 function normalizeMessages(messages) {
   if (!Array.isArray(messages) || messages.length === 0) {
-    return { messages: [], systemText: "" };
+    return { messages: [], systemText: "", imageCount: 0, invalidImageCount: 0 };
   }
   const systemParts = [];
   const out = [];
+  let imageCount = 0;
+  let invalidImageCount = 0;
   for (const msg of messages) {
     if (!msg || typeof msg !== "object") continue;
-    const text = extractText(msg.content);
+    const { text, images, invalidImages } = extractContent(msg.content);
     if (msg.role === "system") {
       if (text) systemParts.push(text);
       continue;
     }
     const cloned = { ...msg };
-    cloned.content = text;
+    cloned.content = images.length > 0 ? "" : text;
+    if (images.length > 0) {
+      cloned.contents = [
+        ...images,
+        { type: "text", text },
+      ];
+      imageCount += images.length;
+      invalidImageCount += invalidImages;
+    }
     out.push(cloned);
   }
-  return { messages: out, systemText: systemParts.join("\n\n") };
+  return { messages: out, systemText: systemParts.join("\n\n"), imageCount, invalidImageCount };
 }
 
-function extractText(content) {
-  if (typeof content === "string") return content;
-  if (content == null) return "";
+function isValidQoderImageUrl(url) {
+  if (typeof url !== "string" || !url) return false;
+  return /^https?:\/\//i.test(url) || (url.startsWith("data:image/") && url.includes(";base64,"));
+}
+
+function normalizeImagePart(item) {
+  if (!item || typeof item !== "object" || item.type !== "image_url") return null;
+  const raw = item.image_url;
+  const url = typeof raw === "string" ? raw : raw?.url;
+  return {
+    type: "image_url",
+    image_url: { url: typeof url === "string" ? url : "" },
+    _invalid: !isValidQoderImageUrl(url),
+  };
+}
+
+function extractContent(content) {
+  if (typeof content === "string") return { text: content, images: [], invalidImages: 0 };
+  if (content == null) return { text: "", images: [], invalidImages: 0 };
   if (Array.isArray(content)) {
     const parts = [];
+    const images = [];
+    let invalidImages = 0;
     for (const item of content) {
       if (item && typeof item === "object") {
+        const image = normalizeImagePart(item);
+        if (image) {
+          if (image._invalid) {
+            invalidImages++;
+          }
+          delete image._invalid;
+          images.push(image);
+          continue;
+        }
         if (item.type === "text" && typeof item.text === "string") {
           parts.push(item.text);
         } else if (typeof item.text === "string") {
@@ -219,17 +257,36 @@ function extractText(content) {
         }
       }
     }
-    return parts.join("\n");
+    return { text: parts.join("\n"), images, invalidImages };
   }
-  return String(content);
+  return { text: String(content), images: [], invalidImages: 0 };
+}
+
+function validateQoderImageSupport({ modelConfig, imageCount, invalidImageCount = 0 }) {
+  if (invalidImageCount > 0) {
+    throw new Error("qoder: image input is missing a valid image_url");
+  }
+  if (imageCount > 0 && !supportsQoderImageInput(modelConfig)) {
+    throw new Error(
+      `qoder: model "${modelConfig?.key || "unknown"}" does not support image input`,
+    );
+  }
+  if (imageCount > 0) return { ...modelConfig, is_vl: true };
+  return modelConfig;
 }
 
 function lastUserText(messages) {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (m?.role === "user" && typeof m.content === "string") {
-      return m.content;
-    }
+    if (m?.role !== "user") continue;
+    if (typeof m.content === "string" && m.content) return m.content;
+    if (!Array.isArray(m.contents)) continue;
+    const text = m.contents
+      .filter((part) => part?.type === "text" && typeof part.text === "string")
+      .map((part) => part.text)
+      .join("\n");
+    if (text) return text;
+    if (m.contents.some((part) => part?.type === "image_url")) return "[Image input]";
   }
   return "";
 }
@@ -253,6 +310,9 @@ function stableChatRecordId(model, messages, tools, maxTokens) {
     if (m.role) { h.update("\0"); h.update(m.role); }
     if (typeof m.content === "string" && m.content) {
       h.update("\0"); h.update(m.content);
+    }
+    if (Array.isArray(m.contents)) {
+      try { h.update("\0"); h.update(JSON.stringify(m.contents)); } catch {}
     }
   }
   if (tools) {
@@ -289,7 +349,8 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
     modelConfig = { ...retried, key: qoderKey };
   }
 
-  const { messages, systemText } = normalizeMessages(body.messages || []);
+  const { messages, systemText, imageCount, invalidImageCount } = normalizeMessages(body.messages || []);
+  modelConfig = validateQoderImageSupport({ modelConfig, imageCount, invalidImageCount });
   const tools = body.tools;
   const isReasoning = !!modelConfig.is_reasoning;
   const maxOutputTokens = Number(modelConfig.max_output_tokens) || 0;
@@ -337,7 +398,11 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
         imageUrls: null,
         extra: {
           context: [],
-          modelConfig: { key: qoderKey, is_reasoning: isReasoning },
+          modelConfig: {
+            key: qoderKey,
+            is_reasoning: isReasoning,
+            ...(imageCount > 0 ? { is_vl: true } : {}),
+          },
           originalContent: lastUser,
         },
         features: [],
@@ -670,6 +735,7 @@ export default QoderExecutor;
 // should import QoderExecutor and use its public methods.
 export const __test__ = {
   normalizeMessages,
+  validateQoderImageSupport,
   wrapQoderSSE,
   buildQoderRequestBody,
 };

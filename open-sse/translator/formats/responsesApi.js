@@ -23,6 +23,44 @@ export function normalizeResponsesInput(input) {
   return null;
 }
 
+export function splitResponsesFunctionOutput(output) {
+  if (typeof output === "string") {
+    return { toolContent: output, imageMessage: null };
+  }
+  if (!Array.isArray(output)) {
+    return { toolContent: JSON.stringify(output), imageMessage: null };
+  }
+
+  const textParts = [];
+  const imageParts = [];
+  for (const item of output) {
+    if (item?.type === RESPONSES_ITEM.INPUT_TEXT && typeof item.text === "string") {
+      textParts.push(item.text);
+      continue;
+    }
+    if (item?.type === RESPONSES_ITEM.INPUT_IMAGE) {
+      const url = typeof item.image_url === "string" ? item.image_url : "";
+      imageParts.push({
+        type: OPENAI_BLOCK.IMAGE_URL,
+        image_url: { url, detail: item.detail || "auto" },
+      });
+    }
+  }
+
+  return {
+    toolContent: textParts.join("\n") || (imageParts.length ? "[Image output attached below]" : JSON.stringify(output)),
+    imageMessage: imageParts.length
+      ? {
+          role: ROLE.USER,
+          content: [
+            { type: OPENAI_BLOCK.TEXT, text: "Image output from tool call" },
+            ...imageParts,
+          ],
+        }
+      : null,
+  };
+}
+
 /**
  * Convert OpenAI Responses API format to standard chat completions format
  * Responses API uses: { input: [...], instructions: "..." }
@@ -43,6 +81,14 @@ export function convertResponsesApiFormat(body) {
   let currentAssistantMsg = null;
   let pendingToolCalls = [];
   let pendingToolResults = [];
+  let pendingImageMessages = [];
+
+  const flushPendingToolResults = () => {
+    for (const toolResult of pendingToolResults) result.messages.push(toolResult);
+    for (const imageMessage of pendingImageMessages) result.messages.push(imageMessage);
+    pendingToolResults = [];
+    pendingImageMessages = [];
+  };
 
   const inputItems = normalizeResponsesInput(body.input);
   if (!inputItems) return body;
@@ -59,12 +105,7 @@ export function convertResponsesApiFormat(body) {
         currentAssistantMsg = null;
       }
       // Flush pending tool results
-      if (pendingToolResults.length > 0) {
-        for (const tr of pendingToolResults) {
-          result.messages.push(tr);
-        }
-        pendingToolResults = [];
-      }
+      flushPendingToolResults();
 
       // Convert content: input_text → text, output_text → text, input_image → image_url
       const content = Array.isArray(item.content)
@@ -72,7 +113,7 @@ export function convertResponsesApiFormat(body) {
           if (c.type === RESPONSES_ITEM.INPUT_TEXT) return { type: OPENAI_BLOCK.TEXT, text: c.text };
           if (c.type === RESPONSES_ITEM.OUTPUT_TEXT) return { type: OPENAI_BLOCK.TEXT, text: c.text };
           if (c.type === RESPONSES_ITEM.INPUT_IMAGE) {
-            const url = c.image_url || c.file_id || "";
+            const url = c.image_url || "";
             return { type: OPENAI_BLOCK.IMAGE_URL, image_url: { url, detail: c.detail || "auto" } };
           }
           return c;
@@ -106,12 +147,18 @@ export function convertResponsesApiFormat(body) {
         result.messages.push(currentAssistantMsg);
         currentAssistantMsg = null;
       }
+      const { toolContent, imageMessage } = splitResponsesFunctionOutput(item.output);
+      if (imageMessage) {
+        imageMessage.content[0].text = `Image output from tool call ${item.call_id}`;
+      }
+
       // Add tool result
       pendingToolResults.push({
         role: ROLE.TOOL,
         tool_call_id: item.call_id,
-        content: typeof item.output === "string" ? item.output : JSON.stringify(item.output)
+        content: toolContent
       });
+      if (imageMessage) pendingImageMessages.push(imageMessage);
     }
     else if (itemType === RESPONSES_ITEM.REASONING) {
       // Skip reasoning items - they are for display only
@@ -123,11 +170,7 @@ export function convertResponsesApiFormat(body) {
   if (currentAssistantMsg) {
     result.messages.push(currentAssistantMsg);
   }
-  if (pendingToolResults.length > 0) {
-    for (const tr of pendingToolResults) {
-      result.messages.push(tr);
-    }
-  }
+  flushPendingToolResults();
 
   // Cleanup Responses API specific fields
   delete result.input;

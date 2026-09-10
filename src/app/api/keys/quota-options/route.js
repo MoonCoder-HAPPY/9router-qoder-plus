@@ -41,19 +41,23 @@ export function buildQoderKeyUsageState(policy, accounts) {
 
   const accountMap = new Map((accounts || []).map((account) => [account.id, account]));
   const currentRemainingByConnectionId = Object.fromEntries(
-    (qoderPolicy.connectionIds || []).map((connectionId) => [
-      connectionId,
-      {
-        remaining: Number(accountMap.get(connectionId)?.remainingQuota) || 0,
-        quotaRows: accountMap.get(connectionId)?.quotaRows || [],
-      },
-    ])
+    (qoderPolicy.connectionIds || []).map((connectionId) => {
+      const account = accountMap.get(connectionId);
+      const unavailable = !account || account.quotaStatus === "unavailable";
+      return [
+        connectionId,
+        {
+          remaining: unavailable ? Number.NaN : Number(account.remainingQuota),
+          quotaRows: unavailable ? [] : account.quotaRows || [],
+        },
+      ];
+    })
   );
   const usageState = evaluateApiKeyProviderCreditUsage({
     policy,
     provider: "qoder",
     currentRemainingByConnectionId,
-    useBaselineFallback: false,
+    useBaselineFallback: true,
   });
   const activeAccount = usageState.activeConnectionId ? accountMap.get(usageState.activeConnectionId) : null;
   return {
@@ -105,6 +109,7 @@ export async function buildQoderQuotaOptions({ excludeKeyId = null } = {}) {
       if (usage?.message || usage?.error) {
         quotaStatus = "unavailable";
         quotaMessage = usage.message || usage.error;
+        remainingQuota = null;
       } else {
         const summed = sumQoderRemainingQuota(usage);
         remainingQuota = summed.remaining;
@@ -113,6 +118,7 @@ export async function buildQoderQuotaOptions({ excludeKeyId = null } = {}) {
     } catch (error) {
       quotaStatus = "unavailable";
       quotaMessage = error.message;
+      remainingQuota = null;
     }
 
     accounts.push({
