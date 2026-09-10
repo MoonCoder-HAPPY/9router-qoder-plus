@@ -62,6 +62,7 @@ function normalizeCreditUsageLedger(value, connectionIds = []) {
     if (Number.isFinite(lastRemainingQuota) && lastRemainingQuota >= 0) {
       entry.lastRemainingQuota = lastRemainingQuota;
     }
+    if (raw?.precise === true) entry.precise = true;
     if (typeof raw?.updatedAt === "string" && raw.updatedAt) entry.updatedAt = raw.updatedAt;
     result[id] = entry;
   }
@@ -214,19 +215,28 @@ export function evaluateApiKeyProviderCreditUsage({ policy, provider, currentRem
     const initial = Number(baseline[connectionId]?.initialRemainingQuota);
     const currentState = normalizeCurrentQuotaState(currentRemainingByConnectionId?.[connectionId]);
     const current = currentState.remaining;
+    const accountLimit = getAccountAllocationLimit(providerPolicy, connectionId);
+    const ledgerUsed = Number(ledger[connectionId]?.used);
+    const previousUsed = Number.isFinite(ledgerUsed) ? Math.max(0, ledgerUsed) : 0;
+    const countedPreviousUsage = accountLimit > 0 ? Math.min(previousUsed, accountLimit) : 0;
     if (!Number.isFinite(initial) || !Number.isFinite(current)) {
+      used += countedPreviousUsage;
       unavailableConnectionIds.push(connectionId);
       continue;
     }
-    const accountLimit = getAccountAllocationLimit(providerPolicy, connectionId);
     const consumed = useBaselineFallback ? calculateQuotaConsumed(baseline[connectionId], currentState) : 0;
-    const ledgerUsed = Number(ledger[connectionId]?.used);
-    const effectiveConsumed = Math.max(consumed, Number.isFinite(ledgerUsed) ? ledgerUsed : 0);
+    const effectiveConsumed = ledger[connectionId]?.precise === true
+      ? previousUsed
+      : Math.max(consumed, previousUsed);
     const countedConsumed = accountLimit > 0 ? Math.min(effectiveConsumed, accountLimit) : 0;
     used += countedConsumed;
-    if (current > 0 && effectiveConsumed < accountLimit && !(effectiveConsumed === 0 && hasQuotaGrownAboveBaseline(baseline[connectionId], currentState))) {
-      activeConnectionId = connectionId;
-      break;
+    if (current > 0 && effectiveConsumed < accountLimit) {
+      const grewAboveBaseline = hasQuotaGrownAboveBaseline(baseline[connectionId], currentState);
+      if (ledger[connectionId]?.precise === true || effectiveConsumed > 0 || !grewAboveBaseline) {
+        activeConnectionId = connectionId;
+        break;
+      }
+      continue;
     }
     // Verifiable but over budget / out of remaining quota: do not route here.
     exhaustedConnectionIds.push(connectionId);
@@ -263,16 +273,40 @@ export function mergeQoderCreditUsageLedger({ providerPolicy, currentRemainingBy
     if (Number.isFinite(lastRemaining) && currentState.remaining < lastRemaining) {
       observedDrop = lastRemaining - currentState.remaining;
     }
-    const used = Math.max(0, previousUsedAmount, baselineConsumed, previousUsedAmount + observedDrop);
+    const used = previous.precise === true
+      ? previousUsedAmount
+      : Math.max(0, previousUsedAmount, baselineConsumed, previousUsedAmount + observedDrop);
 
     nextLedger[connectionId] = {
       used,
       lastRemainingQuota: currentState.remaining,
+      ...(previous.precise === true ? { precise: true } : {}),
       updatedAt,
     };
   }
 
   return nextLedger;
+}
+
+export function applyQoderPreciseCreditUsage({
+  providerPolicy,
+  connectionId,
+  credits,
+  updatedAt = new Date().toISOString(),
+}) {
+  const amount = Number(credits);
+  if (!connectionId || !Number.isFinite(amount) || amount < 0) {
+    return normalizeCreditUsageLedger(providerPolicy?.creditUsageLedger, null);
+  }
+  const ledger = normalizeCreditUsageLedger(providerPolicy?.creditUsageLedger, null);
+  const previous = ledger[connectionId] || {};
+  ledger[connectionId] = {
+    ...previous,
+    used: Math.max(0, Number(previous.used) || 0) + amount,
+    precise: true,
+    updatedAt,
+  };
+  return ledger;
 }
 
 function normalizeCurrentQuotaState(value) {

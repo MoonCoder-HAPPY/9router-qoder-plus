@@ -106,6 +106,22 @@ Qoder 多模态输入已支持 Claude Code 与 Codex。用户直接粘贴的图�
 
 图片是否允许由 Qoder 实时模型目录中的 `is_vl` 决定。视觉模型会正常接收图片；非视觉模型会在 9router 本地返回明确错误，不会把无效请求发送到 Qoder。
 
+### CC-Switch 用量查询
+
+本版新增 CC-Switch 兼容的 `POST /api/usage` 接口，使用 API Key 鉴权：
+
+```bash
+curl -X POST http://127.0.0.1:20128/api/usage \
+  -H "Authorization: Bearer <apiKey>" \
+  -H "User-Agent: cc-switch/1.0"
+```
+
+返回字段包含 `isValid`、`balance`、`remaining`、`total`、`used`、`unit`、`planName` 和 `extra`。Qoder 配额单位固定为 `credits`。
+
+对于已分配额度的 Key，返回该 Key 的分配额度、累计精确消耗和剩余额度。对于没有分配额度的 Key，返回所有启用 Qoder 账号及资源包的汇总可用额度。
+
+Qoder 每次成功调用的 usage 帧中会返回实际 `credits` 消耗。9router 会按请求所属的 API Key 和账号精确累计，共享同一账号的多个 Key 不会互相计入对方用量。
+
 ### 钉钉告警
 
 Dashboard -> Profile 新增 `Model Idle Alert` 配置区。

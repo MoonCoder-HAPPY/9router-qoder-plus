@@ -1,7 +1,11 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { stringifyJson } from "../helpers/jsonCol.js";
-import { mergeQoderCreditUsageLedger, normalizeApiKeyPolicy } from "@/shared/services/apiKeyPolicy.js";
+import {
+  applyQoderPreciseCreditUsage,
+  mergeQoderCreditUsageLedger,
+  normalizeApiKeyPolicy,
+} from "@/shared/services/apiKeyPolicy.js";
 
 function rowToKey(row) {
   if (!row) return null;
@@ -99,6 +103,36 @@ export async function updateApiKeyQoderCreditUsageLedger(id, currentRemainingByC
       creditUsageLedger: ledger,
     };
     db.run(`UPDATE apiKeys SET policy = ? WHERE id = ?`, [stringifyJson(policy), id]);
+    result = rowToKey({ ...row, policy: stringifyJson(policy) });
+  });
+  return result;
+}
+
+export async function recordApiKeyQoderCreditUsage(apiKey, connectionId, credits, updatedAt = new Date().toISOString()) {
+  if (!apiKey || !connectionId) return null;
+  const amount = Number(credits);
+  if (!Number.isFinite(amount) || amount < 0) return null;
+
+  const db = await getAdapter();
+  let result = null;
+  db.transaction(() => {
+    const row = db.get(`SELECT * FROM apiKeys WHERE key = ?`, [apiKey]);
+    if (!row) return;
+    const record = rowToKey(row);
+    const policy = normalizeApiKeyPolicy(record.policy);
+    if (!policy.enabled || !policy.providers.qoder) return;
+
+    const ledger = applyQoderPreciseCreditUsage({
+      providerPolicy: policy.providers.qoder,
+      connectionId,
+      credits: amount,
+      updatedAt,
+    });
+    policy.providers.qoder = {
+      ...policy.providers.qoder,
+      creditUsageLedger: ledger,
+    };
+    db.run(`UPDATE apiKeys SET policy = ? WHERE id = ?`, [stringifyJson(policy), record.id]);
     result = rowToKey({ ...row, policy: stringifyJson(policy) });
   });
   return result;

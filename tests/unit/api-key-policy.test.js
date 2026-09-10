@@ -1,7 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("open-sse/index.js", () => ({}));
 
 import {
   API_KEY_POLICY_LIMIT_METRIC,
+  applyQoderPreciseCreditUsage,
   buildQoderQuotaBaseline,
   buildQoderQuotaBreakdownBaseline,
   getAccountAllocationLimit,
@@ -947,5 +950,105 @@ describe("api key policy", () => {
     }).providers.qoder;
 
     expect(preserveQoderCreditUsageLedger(previous, next)).toEqual(previous.creditUsageLedger);
+  });
+
+  it("adds exact Qoder credits only to the selected API key account", () => {
+    const providerPolicy = normalizeApiKeyPolicy({
+      enabled: true,
+      providers: {
+        qoder: {
+          connectionIds: ["a", "b"],
+          accountAllocations: { a: 1000, b: 1000 },
+          creditUsageLedger: {
+            a: { used: 100, precise: true, lastRemainingQuota: 900 },
+          },
+        },
+      },
+    }).providers.qoder;
+
+    const ledger = applyQoderPreciseCreditUsage({
+      providerPolicy,
+      connectionId: "a",
+      credits: 0.125,
+      updatedAt: "2026-09-10T12:00:00.000Z",
+    });
+
+    expect(ledger.a).toMatchObject({
+      used: 100.125,
+      precise: true,
+      updatedAt: "2026-09-10T12:00:00.000Z",
+    });
+    expect(ledger.b).toBeUndefined();
+  });
+
+  it("keeps precise accounting mode when later observing account quota", () => {
+    const providerPolicy = normalizeApiKeyPolicy({
+      enabled: true,
+      providers: {
+        qoder: {
+          connectionIds: ["a"],
+          accountAllocations: { a: 1000 },
+          creditUsageLedger: {
+            a: { used: 100.125, precise: true, lastRemainingQuota: 899.875 },
+          },
+        },
+      },
+    }).providers.qoder;
+
+    const ledger = mergeQoderCreditUsageLedger({
+      providerPolicy,
+      currentRemainingByConnectionId: { a: 899.5 },
+      updatedAt: "2026-09-10T12:01:00.000Z",
+    });
+
+    expect(ledger.a).toMatchObject({
+      used: 100.125,
+      precise: true,
+      lastRemainingQuota: 899.5,
+    });
+  });
+
+  it("does not mark a refilled Qoder account exhausted when key usage is zero", () => {
+    const policy = normalizeApiKeyPolicy({
+      enabled: true,
+      providers: {
+        qoder: {
+          connectionIds: ["a"],
+          priorityOrder: ["a"],
+          accountAllocations: { a: 1000 },
+          quotaBaseline: {
+            a: { initialRemainingQuota: 1000, capturedAt: "2026-09-10T00:00:00.000Z" },
+          },
+        },
+      },
+    });
+
+    expect(evaluateApiKeyProviderCreditUsage({
+      policy,
+      provider: "qoder",
+      currentRemainingByConnectionId: { a: 2000 },
+    })).toMatchObject({
+      allowed: true,
+      exhaustedConnectionIds: [],
+    });
+  });
+
+  it("does not count an unavailable account as zero quota", () => {
+    const policy = normalizeApiKeyPolicy({
+      enabled: true,
+      providers: {
+        qoder: {
+          connectionIds: ["a"],
+          accountAllocations: { a: 1000 },
+          creditUsageLedger: { a: { used: 100, precise: true } },
+        },
+      },
+    });
+    const state = buildQoderKeyUsageState(policy, [
+      { id: "a", quotaStatus: "unavailable", remainingQuota: 0, quotaRows: [] },
+    ]);
+
+    expect(state.used).toBe(100);
+    expect(state.unavailableConnectionIds).toContain("a");
   });
 });

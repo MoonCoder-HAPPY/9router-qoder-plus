@@ -165,6 +165,31 @@ describe("api key policy db integration", () => {
     });
   });
 
+  it("records exact Qoder credits by API key value", async () => {
+    const key = await db.createApiKey("tenant-a", "machine-a");
+    await db.updateApiKey(key.id, {
+      policy: {
+        enabled: true,
+        providers: {
+          qoder: {
+            connectionIds: ["conn-a"],
+            accountAllocations: { "conn-a": 100 },
+            creditUsageLedger: {
+              "conn-a": { used: 25, precise: true },
+            },
+          },
+        },
+      },
+    });
+
+    await db.recordApiKeyQoderCreditUsage(key.key, "conn-a", 1.25, "2026-09-10T12:00:00.000Z");
+    const updated = await db.getApiKeyByValue(key.key);
+    expect(updated.policy.providers.qoder.creditUsageLedger["conn-a"]).toMatchObject({
+      used: 26.25,
+      precise: true,
+    });
+  });
+
   it("resets Qoder credit usage only through the explicit reset helper", async () => {
     const key = await db.createApiKey("tenant-a", "machine-a");
     await db.updateApiKey(key.id, {

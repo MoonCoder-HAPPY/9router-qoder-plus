@@ -1,4 +1,4 @@
-import { saveRequestUsage, appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
+import { saveRequestUsage, appendRequestLog, saveRequestDetail, recordApiKeyQoderCreditUsage } from "@/lib/usageDb.js";
 import { COLORS } from "../../utils/stream.js";
 import { canonicalizeUsage } from "../../utils/usageTracking.js";
 
@@ -40,7 +40,9 @@ export function extractUsageFromResponse(responseBody) {
       prompt_tokens: responseBody.usage.prompt_tokens || 0,
       completion_tokens: responseBody.usage.completion_tokens || 0,
       cached_tokens: responseBody.usage.prompt_tokens_details?.cached_tokens,
-      reasoning_tokens: responseBody.usage.completion_tokens_details?.reasoning_tokens
+      reasoning_tokens: responseBody.usage.completion_tokens_details?.reasoning_tokens,
+      credits: responseBody.usage.credits,
+      original_credits: responseBody.usage.original_credits
     };
   }
 
@@ -99,7 +101,8 @@ export function saveUsageStats({ provider, model, tokens, connectionId, apiKey, 
   const inTokens = tokens.input_tokens ?? tokens.prompt_tokens ?? 0;
   const outTokens = tokens.output_tokens ?? tokens.completion_tokens ?? 0;
 
-  if (inTokens === 0 && outTokens === 0) return;
+  const exactCredits = Number(tokens.credits);
+  if (inTokens === 0 && outTokens === 0 && !Number.isFinite(exactCredits)) return;
 
   if (!silent) {
     const time = new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -123,4 +126,18 @@ export function saveUsageStats({ provider, model, tokens, connectionId, apiKey, 
     apiKey: apiKey || undefined,
     endpoint: endpoint || null
   }).catch(() => {});
+
+  if (
+    provider === "qoder"
+    && connectionId
+    && apiKey
+    && Number.isFinite(exactCredits)
+    && exactCredits >= 0
+  ) {
+    recordApiKeyQoderCreditUsage(
+      apiKey,
+      connectionId,
+      exactCredits,
+    ).catch(() => {});
+  }
 }
