@@ -82,6 +82,7 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
   const [loadingOptions, setLoadingOptions] = useState(() => isOpen && !!apiKeyItem);
   const [saving, setSaving] = useState(false);
   const [resettingUsage, setResettingUsage] = useState(false);
+  const [serverExceeded, setServerExceeded] = useState(null);
   const [confirmResetUsage, setConfirmResetUsage] = useState(false);
   const [error, setError] = useState("");
 
@@ -130,6 +131,7 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
   });
 
   function toggleConnection(id) {
+    setServerExceeded(null);
     setForm((prev) => {
       const selected = new Set(prev.connectionIds);
       let priorityOrder;
@@ -167,6 +169,7 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
   }
 
   function updateAccountAllocation(id, value) {
+    setServerExceeded(null);
     setForm((prev) => ({
       ...prev,
       accountAllocations: { ...prev.accountAllocations, [id]: value },
@@ -201,7 +204,11 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
         body: JSON.stringify({ policy }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to save restrictions");
+      if (!res.ok) {
+        setServerExceeded(Object.fromEntries((data.exceededAccounts || []).map((item) => [item.connectionId, item])));
+        throw new Error(data.error || "Failed to save restrictions");
+      }
+      setServerExceeded(null);
       onSaved(data.key);
     } catch (e) {
       setError(e.message);
@@ -308,12 +315,17 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
                                 Selected
                               </span>
                             )}
+                            {account.quotaStatus === "missing" && (
+                              <span className="shrink-0 inline-flex h-5 items-center justify-center rounded bg-red-500/10 px-2 text-[11px] font-semibold text-red-600 dark:text-red-400">
+                                {translate("Removed")}
+                              </span>
+                            )}
                             <p className="text-sm font-medium truncate">{account.name}</p>
                           </div>
                         </div>
                         <div className="flex items-center gap-1 shrink-0">
                           <p className="text-xs text-text-muted whitespace-nowrap">
-                            {account.quotaStatus === "unavailable" ? "Unavailable" : (
+                            {account.quotaStatus === "missing" ? translate("Removed from Qoder") : account.quotaStatus === "unavailable" ? "Unavailable" : (
                               <>
                                 <span>{formatNumber(account.remainingQuota)}</span> <span>left</span>
                               </>
@@ -353,6 +365,28 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
                       {account.allocatedToOtherKeys <= 0 && (
                         <p className="text-xs text-text-muted mt-2">
                           <span>Assignable</span>: <span>{formatNumber(assignableCredits)}</span>
+                        </p>
+                      )}
+                      {isSelected && (Number(form.accountAllocations[account.id]) || 0) > assignableCredits && (
+                        <p className="text-xs text-red-500 mt-2">
+                          <span>{translate("Allocation exceeds assignable")}</span>
+                          <span>: </span>
+                          <span>{formatNumber(Number(form.accountAllocations[account.id]) || 0)}</span>
+                          <span> / </span>
+                          <span>{translate("Assignable")}</span>
+                          <span> </span>
+                          <span>{formatNumber(assignableCredits)}</span>
+                        </p>
+                      )}
+                      {serverExceeded?.[account.id] && (
+                        <p className="text-xs text-red-500 mt-2">
+                          <span>{translate("Allocation exceeds assignable")}</span>
+                          <span>: </span>
+                          <span>{formatNumber(serverExceeded[account.id].requested)}</span>
+                          <span> / </span>
+                          <span>{translate("Assignable")}</span>
+                          <span> </span>
+                          <span>{formatNumber(serverExceeded[account.id].maxAssignable)}</span>
                         </p>
                       )}
                       {account.quotaMessage && (
@@ -401,6 +435,11 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2 min-w-0">
                           <p className="text-sm font-medium truncate">{account.name}</p>
+                          {account.quotaStatus === "missing" && (
+                            <span className="shrink-0 inline-flex rounded bg-red-500/10 px-2 py-0.5 text-[11px] font-medium text-red-600 dark:text-red-400">
+                              {translate("Removed")}
+                            </span>
+                          )}
                           {usage.exhausted && (
                             <span className="shrink-0 inline-flex rounded bg-surface-3 px-2 py-0.5 text-[11px] font-medium text-text-muted">
                               Exhausted
@@ -472,7 +511,27 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
           </>
         )}
 
-        {error && <p className="text-sm text-red-500">{error}</p>}
+        {error && (
+          <div className="text-sm text-red-500">
+            <p>{error}</p>
+            {Object.values(serverExceeded || {}).length > 0 && (
+              <ul className="mt-1 list-disc pl-4 text-xs space-y-0.5">
+                {Object.values(serverExceeded).map((item) => (
+                  <li key={item.connectionId}>
+                    <span>{item.name}</span>
+                    {item.missing && <span> ({translate("Removed from Qoder")})</span>}
+                    <span>: </span>
+                    <span>{formatNumber(item.requested)}</span>
+                    <span> / </span>
+                    <span>{translate("Assignable")}</span>
+                    <span> </span>
+                    <span>{formatNumber(item.maxAssignable)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
 
         <div className="flex gap-2">
           {form.enabled && keyUsage?.enabled && (

@@ -82,10 +82,14 @@ export function buildQoderKeyUsageByKeyId(keys, accounts) {
 }
 
 export async function buildQoderQuotaOptions({ excludeKeyId = null } = {}) {
-  const [connections, keys] = await Promise.all([
+  const [connections, keys, allConnections] = await Promise.all([
     getProviderConnections({ provider: "qoder", isActive: true }),
     getApiKeys(),
+    getProviderConnections({ provider: "qoder" }),
   ]);
+  const connectionNameById = Object.fromEntries(
+    (allConnections || []).map((connection) => [connection.id, getConnectionName(connection)])
+  );
   const otherPolicies = keys
     .filter((key) => key.id !== excludeKeyId)
     .map((key) => key.policy)
@@ -134,6 +138,27 @@ export async function buildQoderQuotaOptions({ excludeKeyId = null } = {}) {
   }
 
   const currentKey = keys.find((key) => key.id === excludeKeyId) || null;
+  // Surface "ghost" allocations: accounts this key still references but that
+  // are no longer active Qoder connections. Without these rows the modal
+  // cannot show (or let the user remove) the allocation that makes validation
+  // fail, which reads as an unexplained aggregate error.
+  if (currentKey) {
+    const currentQoderPolicy = getProviderPolicy(currentKey.policy, "qoder");
+    const knownIds = new Set(accounts.map((account) => account.id));
+    for (const connectionId of currentQoderPolicy?.connectionIds || []) {
+      if (knownIds.has(connectionId)) continue;
+      accounts.push({
+        id: connectionId,
+        name: connectionNameById[connectionId] || `${connectionId.slice(0, 8)}…`,
+        email: null,
+        remainingQuota: 0,
+        quotaRows: [],
+        quotaStatus: "missing",
+        quotaMessage: null,
+        allocatedToOtherKeys: getAllocatedToAccount(otherPolicies, connectionId),
+      });
+    }
+  }
   return {
     providers: {
       qoder: {
@@ -178,7 +203,10 @@ export function validateQoderPolicyAllocation(policy, quotaOptions, otherPolicie
     otherPolicies,
     provider: "qoder",
   });
+  const accountById = Object.fromEntries(accounts.map((account) => [account.id, account]));
+  const accountNameById = Object.fromEntries(accounts.map((account) => [account.id, account.name]));
   const perAccount = {};
+  const exceededAccounts = [];
   let hasExceeded = false;
   for (const connectionId of selectedConnectionIds) {
     const selectedPool = Number(accountRemainingById[connectionId]) || 0;
@@ -190,13 +218,25 @@ export function validateQoderPolicyAllocation(policy, quotaOptions, otherPolicie
     const maxAssignable = Math.max(0, selectedPool - allocatedToOtherKeys);
     const requested = getAccountAllocationLimit(qoderPolicy, connectionId);
     perAccount[connectionId] = { selectedPool, allocatedToOtherKeys, maxAssignable, requested };
-    if (requested > maxAssignable) hasExceeded = true;
+    if (requested > maxAssignable) {
+      hasExceeded = true;
+      exceededAccounts.push({
+        connectionId,
+        name: accountNameById[connectionId] || connectionId,
+        missing: accountById[connectionId]?.quotaStatus === "missing" || !accountNameById[connectionId],
+        remaining: selectedPool,
+        allocatedToOtherKeys,
+        maxAssignable,
+        requested,
+      });
+    }
   }
   allocation.perAccount = perAccount;
   if (hasExceeded || qoderPolicy.allocationLimit > allocation.maxAssignable) {
     return {
       ok: false,
       error: "Allocation exceeds selected Qoder accounts' currently assignable quota",
+      exceededAccounts,
       allocation,
     };
   }

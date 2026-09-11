@@ -48,7 +48,7 @@ export async function PUT(request, { params }) {
         ]);
         const validation = validateQoderPolicyAllocation(normalizedPolicy, quotaOptions, otherPolicies, existing.policy);
         if (!validation.ok) {
-          return NextResponse.json({ error: validation.error, allocation: validation.allocation }, { status: 400 });
+          return NextResponse.json({ error: validation.error, exceededAccounts: validation.exceededAccounts || [], allocation: validation.allocation }, { status: 400 });
         }
         const qoderPolicy = getProviderPolicy(normalizedPolicy, "qoder");
         if (qoderPolicy) {
