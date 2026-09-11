@@ -438,9 +438,27 @@ describe("validateQoderImageSupport", () => {
     })).toThrow(/does not support image input/i);
   });
 
-  it("rejects DeepSeek images even when Qoder metadata says is_vl true", () => {
-    expect(() => validateQoderImageSupport({
+  it("accepts DeepSeek images when Qoder live metadata says is_vl true", () => {
+    expect(validateQoderImageSupport({
       modelConfig: { key: "dmodel", is_vl: true },
+      imageCount: 1,
+    })).toEqual({ key: "dmodel", is_vl: true });
+    expect(validateQoderImageSupport({
+      modelConfig: { key: "dfmodel", is_vl: true },
+      imageCount: 1,
+    })).toEqual({ key: "dfmodel", is_vl: true });
+  });
+
+  it("accepts tier aliases when live metadata marks them is_vl", () => {
+    expect(validateQoderImageSupport({
+      modelConfig: { key: "auto", is_vl: true },
+      imageCount: 1,
+    })).toEqual({ key: "auto", is_vl: true });
+  });
+
+  it("rejects models whose live metadata says is_vl false", () => {
+    expect(() => validateQoderImageSupport({
+      modelConfig: { key: "lite", is_vl: false },
       imageCount: 1,
     })).toThrow(/does not support image input/i);
   });

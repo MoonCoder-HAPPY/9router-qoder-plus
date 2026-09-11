@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import { getCapabilitiesForModel } from "../../open-sse/providers/capabilities.js";
 
 describe("getCapabilitiesForModel", () => {
+  it("marks DeepSeek V4 family as vision-capable", () => {
+    expect(getCapabilitiesForModel("deepseek", "deepseek-v4-pro").vision).toBe(true);
+    expect(getCapabilitiesForModel("deepseek", "deepseek-v4-flash").vision).toBe(true);
+    expect(getCapabilitiesForModel("deepseek", "deepseek-chat").vision).toBe(false);
+  });
+
   const claudeSonnet5Expected = {
     contextWindow: 1000000,
     maxOutput: 128000,

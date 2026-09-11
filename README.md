@@ -143,7 +143,7 @@ _Qoder 模型列表优先展示 display name，并显示每个模型的额度倍
 
 视觉能力判断优先参考 Qoder 实时模型目录中的 `is_vl`，但会对已知误标模型做保守覆盖：
 
-- DeepSeek 模型不会被当作原生视觉模型。
+- 视觉能力以 Qoder 实时模型目录的 `is_vl` 为准（例如 DeepSeek-V4-Pro / DeepSeek-Flash 均为 `is_vl: true`，支持图片输入；`lite` 为 `is_vl: false`，收到图片时本地拒绝）。
 - `auto`、`ultimate`、`performance`、`efficient` 等路由档位不会显示为原生视觉模型。
 - 非视觉模型收到图片时，9router 会在本地返回 HTTP 400，不把无效图片请求发送到 Qoder。
 

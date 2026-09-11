@@ -35,11 +35,13 @@ describe("detectRequiredCapabilities", () => {
     expect(r.has("vision")).toBe(true);
   });
 
-  it("web_search tool -> search", () => {
+  // Search-based auto-switch is intentionally not wired yet (see combo.js
+  // "search: temporarily disabled in auto-switch"); assert current behavior.
+  it("web_search tool -> search not detected while feature unwired", () => {
     const r = detectRequiredCapabilities({ messages: [{ role: "user", content: "q" }], tools: [
       { type: "web_search" },
     ] });
-    expect(r.has("search")).toBe(true);
+    expect(r.has("search")).toBe(false);
   });
 
   it("responses input_image -> vision", () => {

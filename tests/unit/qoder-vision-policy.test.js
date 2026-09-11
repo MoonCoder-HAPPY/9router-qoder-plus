@@ -2,15 +2,22 @@ import { describe, expect, it } from "vitest";
 import { supportsQoderImageInput } from "../../open-sse/shared/qoder/vision.js";
 
 describe("Qoder image input policy", () => {
-  it("rejects DeepSeek models even when Qoder incorrectly marks is_vl true", () => {
-    expect(supportsQoderImageInput({ key: "dmodel", is_vl: true })).toBe(false);
-    expect(supportsQoderImageInput({ key: "dfmodel", is_vl: true })).toBe(false);
+  it("follows live catalog metadata for DeepSeek models", () => {
+    expect(supportsQoderImageInput({ key: "dmodel", is_vl: true })).toBe(true);
+    expect(supportsQoderImageInput({ key: "dfmodel", is_vl: true })).toBe(true);
+    expect(supportsQoderImageInput({ key: "dfmodel", is_vl: false })).toBe(false);
   });
 
-  it("treats routing aliases as non-native image models", () => {
+  it("follows live catalog metadata for tier aliases", () => {
     for (const key of ["auto", "ultimate", "performance", "efficient"]) {
-      expect(supportsQoderImageInput({ key, is_vl: true })).toBe(false);
+      expect(supportsQoderImageInput({ key, is_vl: true })).toBe(true);
+      expect(supportsQoderImageInput({ key, is_vl: false })).toBe(false);
     }
+  });
+
+  it("rejects unknown models and missing metadata", () => {
+    expect(supportsQoderImageInput({})).toBe(false);
+    expect(supportsQoderImageInput({ key: "lite" })).toBe(false);
   });
 
   it("keeps verified non-DeepSeek models eligible", () => {
