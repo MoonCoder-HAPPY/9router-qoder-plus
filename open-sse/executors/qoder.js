@@ -55,6 +55,16 @@ const QUEUE_RETRY = {
 };
 const QODER_KEEPALIVE_MS = Number(process.env.QODER_KEEPALIVE_MS) || 10000;
 
+// Qoder's gateway answers "First Token Timeout or Upstream Timeout" (HTTP 504
+// or an SSE envelope with statusCodeValue 504) when a large context cannot
+// produce its first token inside the gateway budget. It is transient, so it
+// is retried on the same keep-alive stream with a smaller dedicated budget.
+const TIMEOUT_RETRY = {
+  maxAttempts: Number(process.env.QODER_TIMEOUT_MAX_ATTEMPTS) || 3,
+  baseDelayMs: Number(process.env.QODER_TIMEOUT_BASE_DELAY_MS) || 3000,
+  maxDelayMs: Number(process.env.QODER_TIMEOUT_MAX_DELAY_MS) || 15000,
+};
+
 /**
  * Detect whether a 403 response is Qoder's soft "queued" rate limit.
  * The body is nested JSON: {"code":"403","message":"{\"code\":\"10605\",
@@ -69,6 +79,20 @@ async function readQueueInfo(response) {
     return { queued: false, queueCount: null };
   }
   return parseQueueInfoText(text);
+}
+
+function parseTimeoutInfoText(text) {
+  const lower = String(text || "").toLowerCase();
+  const firstToken = lower.includes("first token timeout");
+  const upstream = lower.includes("upstream model timeout");
+  const upstreamGeneric = lower.includes("upstream timeout");
+  if (!firstToken && !upstream && !upstreamGeneric) {
+    return { timeout: false, reason: null };
+  }
+  return {
+    timeout: true,
+    reason: firstToken ? "first token timeout" : "upstream model timeout",
+  };
 }
 
 function parseQueueInfoText(text) {
@@ -153,9 +177,12 @@ async function peekStreamQueueInfo(response) {
           return { ...info, response: null };
         }
       }
-      if (statusVal === 504 && inner.toLowerCase().includes("upstream model timeout")) {
-        try { await reader.cancel("qoder stream upstream model timeout"); } catch {}
-        return { queued: true, queueCount: null, reason: "upstream model timeout", response: null };
+      if (statusVal === 504) {
+        const info = parseTimeoutInfoText(inner);
+        if (info.timeout) {
+          try { await reader.cancel(`qoder stream ${info.reason}`); } catch {}
+          return { queued: true, queueCount: null, reason: info.reason, response: null };
+        }
       }
       return { queued: false, queueCount: null, response: replay() };
     }
@@ -172,6 +199,33 @@ async function inspectQoderResponse(response) {
   if (response.status === 403) {
     const info = await readQueueInfo(response);
     return { ...info, source: "http", response: info.queued ? null : response };
+  }
+
+  if (response.status === 504) {
+    let text = "";
+    try {
+      text = await response.text();
+    } catch {}
+    const info = parseTimeoutInfoText(text);
+    if (info.timeout) {
+      return {
+        queued: true,
+        queueCount: null,
+        reason: info.reason,
+        source: "http",
+        response: null,
+      };
+    }
+    return {
+      queued: false,
+      queueCount: null,
+      source: "http",
+      response: new Response(text, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      }),
+    };
   }
 
   if (response.ok) {
@@ -204,6 +258,7 @@ function createQoderQueueRetryResponse({
   log,
   doFetch,
   retryOptions = QUEUE_RETRY,
+  timeoutRetryOptions = TIMEOUT_RETRY,
   keepaliveMs = QODER_KEEPALIVE_MS,
   sleepFn = sleep,
 }) {
@@ -248,26 +303,32 @@ function createQoderQueueRetryResponse({
 
         let queueInfo = initialQueueInfo;
         let attempt = 0;
+        let timeoutAttempts = 0;
 
         try {
           while (queueInfo?.queued) {
-            if (attempt >= retryOptions.maxAttempts) {
+            const isTimeout = queueInfo.reason === "first token timeout";
+            const budget = isTimeout ? timeoutRetryOptions : retryOptions;
+            const used = isTimeout ? timeoutAttempts : attempt;
+            if (used >= budget.maxAttempts) {
               log?.warn?.(
                 "QODER",
-                `queue retry limit reached after ${attempt}/${retryOptions.maxAttempts} attempts`,
+                `${isTimeout ? "timeout" : "queue"} retry limit reached after ${used}/${budget.maxAttempts} attempts`,
               );
-              error("queue retry limit reached");
+              error(isTimeout ? "timeout retry limit reached" : "queue retry limit reached");
               return;
             }
 
-            attempt++;
+            if (isTimeout) timeoutAttempts++;
+            else attempt++;
+            const current = isTimeout ? timeoutAttempts : attempt;
             const delay = Math.min(
-              retryOptions.baseDelayMs * attempt,
-              retryOptions.maxDelayMs,
+              budget.baseDelayMs * current,
+              budget.maxDelayMs,
             );
             log?.info?.(
               "QODER",
-              `${queueInfo.reason || "queued"} via ${queueInfo.source || "stream"} (position ${queueInfo.queueCount ?? "?"}), retry ${attempt}/${retryOptions.maxAttempts} in ${Math.round(delay / 1000)}s`,
+              `${queueInfo.reason || "queued"} via ${queueInfo.source || "stream"} (position ${queueInfo.queueCount ?? "?"}), retry ${current}/${budget.maxAttempts} in ${Math.round(delay / 1000)}s`,
             );
 
             await sleepFn(delay, signal);
@@ -880,6 +941,7 @@ export class QoderExecutor extends BaseExecutor {
         signal,
         log,
         doFetch,
+        timeoutRetryOptions: TIMEOUT_RETRY,
       });
       return {
         response: queued,
@@ -922,4 +984,5 @@ export const __test__ = {
   wrapQoderSSE,
   buildQoderRequestBody,
   createQoderQueueRetryResponse,
+  inspectQoderResponse,
 };

@@ -38,6 +38,9 @@ Qoder 有时不是直接返回 HTTP 错误，而是在已经建立的 SSE 流中
 | `QODER_QUEUE_BASE_DELAY_MS` | `5000` | 首次排队重试等待时间 |
 | `QODER_QUEUE_MAX_DELAY_MS` | `60000` | 单次排队重试最大等待时间 |
 | `QODER_KEEPALIVE_MS` | `10000` | 排队及流式静默期间发送 SSE keepalive 的间隔 |
+| `QODER_TIMEOUT_MAX_ATTEMPTS` | `3` | Qoder 首 token 超时（504 First Token Timeout）最多重试次数 |
+| `QODER_TIMEOUT_BASE_DELAY_MS` | `3000` | 首 token 超时首次重试等待时间 |
+| `QODER_TIMEOUT_MAX_DELAY_MS` | `15000` | 首 token 超时单次重试最大等待时间 |
 | `QODER_STREAM_TIMEOUT_MS` | `600000` | 等待 Qoder 返回响应头的超时时间 |
 | `QODER_STALL_TIMEOUT_MS` | `600000` | Qoder 流式响应两段字节之间的最大空闲时间 |
 
@@ -276,6 +279,9 @@ docker run -d \
   -e QODER_QUEUE_BASE_DELAY_MS=5000 \
   -e QODER_QUEUE_MAX_DELAY_MS=60000 \
   -e QODER_KEEPALIVE_MS=10000 \
+  -e QODER_TIMEOUT_MAX_ATTEMPTS=3 \
+  -e QODER_TIMEOUT_BASE_DELAY_MS=3000 \
+  -e QODER_TIMEOUT_MAX_DELAY_MS=15000 \
   -e QODER_STREAM_TIMEOUT_MS=600000 \
   -e QODER_STALL_TIMEOUT_MS=600000 \
   9router-qoder-plus:latest
@@ -316,6 +322,9 @@ services:
       QODER_QUEUE_BASE_DELAY_MS: "5000"
       QODER_QUEUE_MAX_DELAY_MS: "60000"
       QODER_KEEPALIVE_MS: "10000"
+      QODER_TIMEOUT_MAX_ATTEMPTS: "3"
+      QODER_TIMEOUT_BASE_DELAY_MS: "3000"
+      QODER_TIMEOUT_MAX_DELAY_MS: "15000"
       QODER_STREAM_TIMEOUT_MS: "600000"
       QODER_STALL_TIMEOUT_MS: "600000"
 ```
@@ -368,6 +377,9 @@ sudo docker run -d \
   -e NEXT_TELEMETRY_DISABLED=1 \
   -e TZ=Asia/Shanghai \
   -e QODER_KEEPALIVE_MS=10000 \
+  -e QODER_TIMEOUT_MAX_ATTEMPTS=3 \
+  -e QODER_TIMEOUT_BASE_DELAY_MS=3000 \
+  -e QODER_TIMEOUT_MAX_DELAY_MS=15000 \
   -e QODER_STREAM_TIMEOUT_MS=600000 \
   -e QODER_STALL_TIMEOUT_MS=600000 \
   9router-qoder-plus:latest
