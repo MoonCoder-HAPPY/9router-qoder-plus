@@ -88,3 +88,7 @@ docs/superpowers/
 .codegraph/
 .PR/
 .next-analyze/*
+
+# local next/font offline build mock
+.next-font-inter.woff2
+.next-font-mocks.json
