@@ -41,10 +41,15 @@ Qoder 有时不是直接返回 HTTP 错误，而是在已经建立的 SSE 流中
 | `QODER_TIMEOUT_MAX_ATTEMPTS` | `3` | Qoder 首 token 超时（504 First Token Timeout）最多重试次数 |
 | `QODER_TIMEOUT_BASE_DELAY_MS` | `3000` | 首 token 超时首次重试等待时间 |
 | `QODER_TIMEOUT_MAX_DELAY_MS` | `15000` | 首 token 超时单次重试最大等待时间 |
+| `QODER_AUTO_CONTINUE_MAX` | `1` | 模型“宣布下一步却停回合”时的自动续跑次数（0 关闭） |
 | `QODER_STREAM_TIMEOUT_MS` | `600000` | 等待 Qoder 返回响应头的超时时间 |
 | `QODER_STALL_TIMEOUT_MS` | `600000` | Qoder 流式响应两段字节之间的最大空闲时间 |
 
 默认配置约等于：排队最多等待 10 分钟左右，流式空闲超时 10 分钟。
+
+### Qoder 自动续跑（防“聊着聊着就停”）
+
+部分 Qoder 模型偶尔会在说完“我先看一下……/Let me check …:”这类下一步宣告后直接以 `stop` 结束回合、却不发工具调用，客户端（Codex / Claude Code）会把这当成正常结束，表现为任务中途停住。本版在流结束时会检测这种“悬挂意图”（短文本 + 冒号或意图动词结尾、且本回合没有任何工具调用、请求带工具），自动发起一次隐藏续跑请求（附带“立即执行你刚宣布的步骤”的提示），并把续跑流拼接进同一条响应；日志会打印 `auto-continue 1/1 ...`。默认最多续跑 1 次，可用 `QODER_AUTO_CONTINUE_MAX=0` 关闭。
 
 ### Qoder 额度增强
 

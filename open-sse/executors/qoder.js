@@ -65,6 +65,16 @@ const TIMEOUT_RETRY = {
   maxDelayMs: Number(process.env.QODER_TIMEOUT_MAX_DELAY_MS) || 15000,
 };
 
+// Some Qoder models occasionally end an agent turn with finish_reason "stop"
+// right after announcing the next step ("let me check ...:"), without emitting
+// a tool call. Codex then treats the turn as complete and the session appears
+// to die mid-task. When that pattern is detected we issue one hidden
+// continuation request and splice its stream into the same response.
+const QODER_AUTO_CONTINUE_MAX = (() => {
+  const raw = Number(process.env.QODER_AUTO_CONTINUE_MAX);
+  return Number.isFinite(raw) ? Math.max(0, Math.floor(raw)) : 1;
+})();
+
 /**
  * Detect whether a 403 response is Qoder's soft "queued" rate limit.
  * The body is nested JSON: {"code":"403","message":"{\"code\":\"10605\",
@@ -546,6 +556,24 @@ function stableChatRecordId(model, messages, tools, maxTokens) {
   return h.digest("hex").slice(0, 16);
 }
 
+const DANGLING_EXCLUSIONS = /let me know|告诉我|如有疑问|有问题随时/i;
+const DANGLING_COLON = /[:：]\s*$/;
+const DANGLING_INTENT = /(让我|我先|我来|我核对|我检查|我查一下|接下来|现在|let me|i'?ll|i will|now let|next,? i)[^。！？!?]{0,60}[。.]?\s*$/i;
+
+/**
+ * Heuristic for "announcement endings": the model said what it will do next
+ * but ended the turn instead of emitting a tool call. Conservative on purpose
+ * (short text, colon or intent verb at the tail, common closing phrases
+ * excluded) so normal final answers are never continued.
+ */
+export function looksLikeDanglingIntent(text) {
+  const t = String(text || "").trim();
+  if (!t || t.length > 600) return false;
+  if (DANGLING_EXCLUSIONS.test(t)) return false;
+  if (DANGLING_COLON.test(t)) return true;
+  return DANGLING_INTENT.test(t.slice(-120));
+}
+
 function truncate(s, n) {
   return s && s.length > n ? `${s.slice(0, n)}...` : s || "";
 }
@@ -656,29 +684,50 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
  * and re-emit as `data: <inner>\n\n`. Errors become `data: [DONE]\n\n` plus
  * a synthetic OpenAI error chunk.
  */
-function wrapQoderSSE(response, model, keepaliveMs = QODER_KEEPALIVE_MS) {
+function wrapQoderSSE(response, model, opts = {}) {
+  const {
+    keepaliveMs = QODER_KEEPALIVE_MS,
+    continueFetch = null,
+    maxContinuations = QODER_AUTO_CONTINUE_MAX,
+    hasTools = false,
+    log = null,
+  } = opts || {};
   if (!response.ok || !response.body) return response;
 
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   let buffer = "";
   let doneEmitted = false;
+  let upstreamEnded = false;
   let keepaliveTimer = null;
   let reader = null;
 
-  // Process one already-extracted SSE line (no trailing newline). Returns
-  // false when the line indicated end-of-stream so the caller can stop
-  // forwarding any remaining chunks after [DONE].
+  // Per-turn trackers used by the auto-continue guard.
+  let sawToolCall = false;
+  let lastFinish = null;
+  let turnText = "";
+  let continuationsUsed = 0;
+
+  const trackChunk = (chunk) => {
+    const choice = chunk?.choices?.[0];
+    if (!choice) return;
+    if (Array.isArray(choice.delta?.tool_calls) && choice.delta.tool_calls.length > 0) {
+      sawToolCall = true;
+    }
+    if (typeof choice.delta?.content === "string") turnText += choice.delta.content;
+    if (choice.finish_reason) lastFinish = choice.finish_reason;
+  };
+
+  // Qoder envelope line: data: {"statusCodeValue":200,"body":"<openai chunk>"}
   const processLine = (line, controller) => {
     const trimmed = line.replace(/\r$/, "").trim();
     if (!trimmed) return;
     if (!trimmed.startsWith("data:")) return;
-    if (doneEmitted) return; // never forward chunks past stream end
+    if (doneEmitted || upstreamEnded) return;
 
     const data = trimmed.slice(5).trimStart();
     if (data === "[DONE]") {
-      controller.enqueue(encoder.encode(SSE_DONE));
-      doneEmitted = true;
+      upstreamEnded = true;
       return;
     }
 
@@ -702,8 +751,7 @@ function wrapQoderSSE(response, model, keepaliveMs = QODER_KEEPALIVE_MS) {
     }
     if (!inner) return;
     if (inner === "[DONE]") {
-      controller.enqueue(encoder.encode(SSE_DONE));
-      doneEmitted = true;
+      upstreamEnded = true;
       return;
     }
     // Inner is an OpenAI-shaped chunk. Strip any embedded newlines so the
@@ -711,12 +759,33 @@ function wrapQoderSSE(response, model, keepaliveMs = QODER_KEEPALIVE_MS) {
     // otherwise split the frame across multiple data: lines and downstream
     // parsers would reassemble them as separate events).
     const sanitized = inner.replace(/\r?\n/g, "");
+    let chunk = null;
+    try { chunk = JSON.parse(sanitized); } catch {}
+    if (chunk) trackChunk(chunk);
     controller.enqueue(encoder.encode(`data: ${sanitized}\n\n`));
+  };
+
+  // Continuation streams are already plain OpenAI SSE (produced by a nested
+  // wrapQoderSSE). Forward their chunks verbatim and swallow their terminal
+  // [DONE]: this wrapper owns the single terminal sentinel of the response.
+  const processOpenAILine = (line, controller) => {
+    const trimmed = line.replace(/\r$/, "").trim();
+    if (!trimmed) return;
+    if (!trimmed.startsWith("data:")) return;
+    if (doneEmitted || upstreamEnded) return;
+    const data = trimmed.slice(5).trimStart();
+    if (data === "[DONE]") {
+      upstreamEnded = true;
+      return;
+    }
+    let chunk = null;
+    try { chunk = JSON.parse(data); } catch { return; }
+    trackChunk(chunk);
+    controller.enqueue(encoder.encode(`data: ${data}\n\n`));
   };
 
   const transformed = new ReadableStream({
     async start(controller) {
-      reader = response.body.getReader();
       const writeKeepalive = () => {
         if (!doneEmitted) {
           try {
@@ -729,29 +798,69 @@ function wrapQoderSSE(response, model, keepaliveMs = QODER_KEEPALIVE_MS) {
         Math.max(10, keepaliveMs),
       );
 
-      let failure = null;
-      try {
+      const pump = async (currentReader, kind) => {
+        reader = currentReader;
+        const handle = kind === "qoder" ? processLine : processOpenAILine;
         while (true) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done) return true;
           buffer += decoder.decode(value, { stream: true });
           let nl;
           while ((nl = buffer.indexOf("\n")) !== -1) {
             const line = buffer.slice(0, nl);
             buffer = buffer.slice(nl + 1);
-            processLine(line, controller);
-            if (doneEmitted) break;
+            handle(line, controller);
+            if (doneEmitted || upstreamEnded) break;
           }
-          if (doneEmitted) {
+          if (doneEmitted) return false;
+          if (upstreamEnded) {
             try { await reader.cancel("qoder stream done"); } catch {}
-            break;
+            return true;
           }
         }
+      };
 
-        buffer += decoder.decode();
+      const flushBuffer = (kind) => {
         if (buffer.length > 0) {
-          processLine(buffer, controller);
+          (kind === "qoder" ? processLine : processOpenAILine)(buffer, controller);
           buffer = "";
+        }
+      };
+
+      let failure = null;
+      let kind = "qoder";
+      try {
+        let ended = await pump(response.body.getReader(), kind);
+        flushBuffer(kind);
+        while (
+          ended &&
+          !doneEmitted &&
+          continueFetch &&
+          continuationsUsed < maxContinuations &&
+          hasTools &&
+          !sawToolCall &&
+          lastFinish !== "tool_calls" &&
+          looksLikeDanglingIntent(turnText)
+        ) {
+          continuationsUsed += 1;
+          log?.info?.(
+            "QODER",
+            `auto-continue ${continuationsUsed}/${maxContinuations}: turn ended (finish=${lastFinish || "eof"}) with no tool call and a dangling intent`,
+          );
+          let nextStream = null;
+          try {
+            nextStream = await continueFetch(turnText);
+          } catch (err) {
+            log?.warn?.("QODER", `auto-continue request failed: ${err.message}`);
+          }
+          if (!nextStream || !nextStream.body) break;
+          sawToolCall = false;
+          lastFinish = null;
+          turnText = "";
+          upstreamEnded = false;
+          kind = "openai";
+          ended = await pump(nextStream.body.getReader(), kind);
+          flushBuffer(kind);
         }
         if (!doneEmitted) {
           controller.enqueue(encoder.encode(SSE_DONE));
@@ -854,10 +963,11 @@ export class QoderExecutor extends BaseExecutor {
     // request ids are reused after an HTTP-200/SSE queued envelope. Keep the
     // semantic payload stable, but refresh request-level ids before each retry
     // and rebuild the COSY signature over the new encoded body.
-    const makeAttemptRequest = (refreshIds = false) => {
+    const makeAttemptRequest = (refreshIds = false, basePayload = null) => {
+      const source = basePayload || payload;
       const attemptPayload = refreshIds
         ? {
-            ...payload,
+            ...source,
             request_id: uuidv4(),
             request_set_id: uuidv4(),
             chat_record_id: uuidv4(),
@@ -915,20 +1025,23 @@ export class QoderExecutor extends BaseExecutor {
 
     // 9router-fix: the whole fetch lives in a helper so the queue stream can
     // re-issue the exact same signed request after a retry delay.
-    const doFetch = async (refreshIds = false) => {
-      if (refreshIds) currentAttemptRequest = makeAttemptRequest(true);
+    const fetchRequest = async (reqObj) => {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(new Error("fetch connect timeout")), timeoutMs);
       const sig = signal ? AbortSignal.any([signal, ctrl.signal]) : ctrl.signal;
       try {
         return await proxyAwareFetch(
           url,
-          { method: "POST", headers: currentAttemptRequest.headers, body: currentAttemptRequest.body, signal: sig },
+          { method: "POST", headers: reqObj.headers, body: reqObj.body, signal: sig },
           proxyOptions,
         );
       } finally {
         clearTimeout(timer);
       }
+    };
+    const doFetch = async (refreshIds = false) => {
+      if (refreshIds) currentAttemptRequest = makeAttemptRequest(true);
+      return fetchRequest(currentAttemptRequest);
     };
 
     let response = await doFetch();
@@ -958,7 +1071,35 @@ export class QoderExecutor extends BaseExecutor {
       return { response, url, headers: currentAttemptRequest.headers, transformedBody: currentAttemptRequest.payload };
     }
 
-    const wrapped = wrapQoderSSE(response, `qoder/${qoderKey}`);
+    // Auto-continue guard: if the model ends the turn right after announcing
+    // the next step (no tool call), issue one hidden continuation request and
+    // splice its stream into this response so the agent loop keeps running.
+    const continueFetch = async (danglingText) => {
+      const nudgedBody = {
+        ...body,
+        messages: [
+          ...(body.messages || []),
+          { role: "assistant", content: danglingText },
+          {
+            role: "user",
+            content:
+              "Continue now: execute the step you just announced with a tool call in this turn. Do not restate the intent.",
+          },
+        ],
+      };
+      const built = await buildQoderRequestBody({ model, body: nudgedBody, credentials, log, proxyOptions, signal });
+      const req = makeAttemptRequest(true, built.payload);
+      const resp = await fetchRequest(req);
+      const inspectedNext = await inspectQoderResponse(resp);
+      if (inspectedNext.queued || !inspectedNext.response?.ok) return null;
+      return wrapQoderSSE(inspectedNext.response, `qoder/${qoderKey}`);
+    };
+
+    const wrapped = wrapQoderSSE(response, `qoder/${qoderKey}`, {
+      continueFetch,
+      hasTools: Array.isArray(body.tools) && body.tools.length > 0,
+      log,
+    });
     return { response: wrapped, url, headers: currentAttemptRequest.headers, transformedBody: currentAttemptRequest.payload };
   }
 
@@ -979,6 +1120,7 @@ export default QoderExecutor;
 // Internals exposed for unit tests. Not part of the public API — callers
 // should import QoderExecutor and use its public methods.
 export const __test__ = {
+  looksLikeDanglingIntent,
   normalizeMessages,
   validateQoderImageSupport,
   wrapQoderSSE,

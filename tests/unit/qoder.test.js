@@ -596,7 +596,7 @@ describe("wrapQoderSSE", () => {
     const wrapped = wrapQoderSSE(
       new Response(upstream, { status: 200 }),
       "qoder/auto",
-      10,
+      { keepaliveMs: 10 },
     );
     const out = await drain(wrapped);
 
