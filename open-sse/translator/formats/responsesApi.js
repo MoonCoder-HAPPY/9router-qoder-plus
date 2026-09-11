@@ -81,6 +81,7 @@ export function convertResponsesApiFormat(body) {
   let currentAssistantMsg = null;
   let pendingToolCalls = [];
   let pendingToolResults = [];
+  const declaredCallIds = new Set();
   let pendingImageMessages = [];
 
   const flushPendingToolResults = () => {
@@ -101,6 +102,7 @@ export function convertResponsesApiFormat(body) {
     if (itemType === RESPONSES_ITEM.MESSAGE) {
       // Flush any pending assistant message with tool calls
       if (currentAssistantMsg) {
+        if (!currentAssistantMsg.tool_calls.length) delete currentAssistantMsg.tool_calls;
         result.messages.push(currentAssistantMsg);
         currentAssistantMsg = null;
       }
@@ -122,6 +124,10 @@ export function convertResponsesApiFormat(body) {
       result.messages.push({ role: item.role, content });
     }
     else if (itemType === RESPONSES_ITEM.FUNCTION_CALL) {
+      // Skip items with empty/missing name — Codex/OpenAI reject nameless tool calls (#444).
+      // Validate before creating the assistant message so a skipped call cannot
+      // leave an assistant with an empty tool_calls array behind.
+      if (!item.name || typeof item.name !== "string" || item.name.trim() === "") continue;
       // Start or append to assistant message with tool_calls
       if (!currentAssistantMsg) {
         currentAssistantMsg = {
@@ -130,8 +136,7 @@ export function convertResponsesApiFormat(body) {
           tool_calls: []
         };
       }
-      // Skip items with empty/missing name — upstream APIs reject nameless tool calls (#444)
-      if (!item.name || typeof item.name !== "string" || item.name.trim() === "") continue;
+      declaredCallIds.add(item.call_id);
       currentAssistantMsg.tool_calls.push({
         id: item.call_id,
         type: OPENAI_BLOCK.FUNCTION,
@@ -142,22 +147,34 @@ export function convertResponsesApiFormat(body) {
       });
     }
     else if (itemType === RESPONSES_ITEM.FUNCTION_CALL_OUTPUT) {
-      // Flush assistant message first if exists
+      // Flush the assistant message that owns this output. Pushing the tool
+      // result immediately keeps every assistant tool_calls block directly
+      // followed by its tool messages; deferring it would let the next
+      // assistant message land in between, which strict validators
+      // (DeepSeek) reject with 400.
       if (currentAssistantMsg) {
+        if (!currentAssistantMsg.tool_calls.length) delete currentAssistantMsg.tool_calls;
         result.messages.push(currentAssistantMsg);
         currentAssistantMsg = null;
       }
+
+      // Drop outputs whose call was never declared (e.g. a nameless call that
+      // was skipped); an orphan tool message referencing an unknown call_id is
+      // itself invalid history for strict providers.
+      if (!declaredCallIds.has(item.call_id)) continue;
+
       const { toolContent, imageMessage } = splitResponsesFunctionOutput(item.output);
       if (imageMessage) {
         imageMessage.content[0].text = `Image output from tool call ${item.call_id}`;
       }
 
-      // Add tool result
-      pendingToolResults.push({
+      result.messages.push({
         role: ROLE.TOOL,
         tool_call_id: item.call_id,
         content: toolContent
       });
+      // Image messages are role:user; hold them until the next message
+      // boundary so they never split a contiguous tool-result run.
       if (imageMessage) pendingImageMessages.push(imageMessage);
     }
     else if (itemType === RESPONSES_ITEM.REASONING) {
@@ -168,6 +185,7 @@ export function convertResponsesApiFormat(body) {
 
   // Flush remaining
   if (currentAssistantMsg) {
+    if (!currentAssistantMsg.tool_calls.length) delete currentAssistantMsg.tool_calls;
     result.messages.push(currentAssistantMsg);
   }
   flushPendingToolResults();
