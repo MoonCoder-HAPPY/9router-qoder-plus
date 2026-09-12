@@ -28,6 +28,18 @@ Qoder 有时不是直接返回 HTTP 错误，而是在已经建立的 SSE 流中
 - Qoder 上游工具调用缺少 `id` 时会自动生成稳定 ID，不再静默丢失工具调用。
 - Responses API 中 reasoning、message、function call 使用独立递增的 `output_index`，避免 Codex 将工具调用误判为 reasoning 的重复输出。
 
+### Qoder 上下文超限正确报错
+
+Qoder 在请求被上游拒绝时（最常见的是上下文超过模型上限），返回的是 HTTP `200` + SSE 首包 `statusCodeValue:400` 的错误 envelope，真正的错误信息还被嵌套了三层 JSON。原版会把这段错误直接当成助手正文（`[qoder error 400: ...]`）返回，客户端因此认为这一轮"成功"了：把乱码正文写进历史继续重试，上下文越滚越大，每次都要等上游约 1 分钟才拒绝，日志里还记成 `success` 并按字节估算出几百万 token 的假用量。
+
+本版改为：
+
+- 在向下游写出第一个字节之前就识别错误 envelope，直接返回真实的 HTTP `400/5xx`，请求详情记录为 `error`，不再伪造 token 用量。
+- 解码嵌套的上游错误原文，超长时使用客户端能识别的标准措辞（`maximum context length` / `prompt is too long` / `reduce the length`），Codex、Claude Code 收到后会走自己的压缩（compact）逻辑，而不是无声死循环。
+- 完整错误原文写入容器日志（`[QODER] upstream envelope error 400 (context overflow) · {...}`），便于排查。
+- `400` 这类"请求体本身被拒"的错误不再触发账号轮换：换任何一个账号都会被同样拒绝，旧逻辑只会把整个账号池按顺序锁一遍。
+- `/v1/models` 中 Qoder 各模型的 `contextWindow` 改为取自 Qoder 实时模型目录（例如 DeepSeek-Flash `1000000`、Qwen3.8-Max `180000`），不再是统一的 `200000` 占位值。
+
 ### Qoder 超时参数可配置
 
 原版固定的流式超时在大上下文请求下容易过早中断。本版增加了 Qoder 专用环境变量：

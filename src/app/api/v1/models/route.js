@@ -505,9 +505,24 @@ export async function buildModelsList(kindFilter, options = {}) {
         // { id, name } — no per-model capability data. Fall back to the same
         // pattern-matched capabilities the dashboard uses (useModelCaps.js) so
         // dynamically-discovered LLM models still surface vision/reasoning/search/tools.
-        const caps = liveCapabilitiesById.get(modelId)
+        let caps = liveCapabilitiesById.get(modelId)
           || capabilitiesFromServiceKind(customKind || liveKind)
           || (kind === LLM_KIND ? getCapabilitiesForModel(providerId, modelId) : null);
+        // Qoder publishes the real per-model input limit in its live catalog
+        // (max_input_tokens -> contextLength). The pattern-matched defaults claim
+        // 200k for *every* Qoder model, which misinforms any client that plans
+        // its context budget from /v1/models (DeepSeek-Flash is really 1M,
+        // Qwen3.8-Max is really 180k). Trust the live numbers when present.
+        if (providerId === "qoder" && qoderPublicModel && caps) {
+          const liveContext = Number(qoderPublicModel.contextLength);
+          if (Number.isFinite(liveContext) && liveContext > 0) {
+            caps = { ...caps, contextWindow: liveContext };
+          }
+          const liveMaxOutput = Number(qoderPublicModel.maxOutputTokens);
+          if (Number.isFinite(liveMaxOutput) && liveMaxOutput > 0) {
+            caps = { ...caps, maxOutput: liveMaxOutput };
+          }
+        }
         if (caps) model.capabilities = caps;
         models.push(model);
       }

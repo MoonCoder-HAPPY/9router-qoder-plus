@@ -114,6 +114,136 @@ function parseQueueInfoText(text) {
   return { queued, queueCount: m ? Number(m[1]) : null };
 }
 
+// ============ 9router-fix: upstream error envelopes ============
+// Qoder reports most request-level failures as HTTP 200 plus a first SSE
+// envelope such as {"statusCodeValue":400,"body":"{\"code\":\"provider_error\",...}"}.
+// The stock wrapper turned that into ordinary assistant text
+// ("[qoder error 400: ...]") with finish_reason "stop", so the client recorded a
+// *successful* turn whose content was garbage, appended it to the history and
+// retried — that is exactly how an over-context session used to loop forever
+// (every retry grew the prompt by another tool-less turn while the upstream
+// spent ~1 minute rejecting it).
+//
+// Now the envelope is detected before a single byte is streamed downstream and
+// converted into a real HTTP error, which lets chatCore log/persist it as a
+// failure and lets Codex / Claude Code react (compact the conversation) instead
+// of silently spinning.
+
+const CONTEXT_OVERFLOW_PATTERN =
+  /range of input length|input length|maximum context|context length|context window|context_length_exceeded|too many tokens|input is too long|prompt is too long|max_input_tokens|reduce the length/i;
+
+const GENERIC_UPSTREAM_MESSAGES =
+  /^(error in upstream response|upstream error|internal server error|bad request|service unavailable)$/i;
+
+/**
+ * Qoder nests the real provider error several layers deep, e.g.
+ *   {"code":"provider_error","message":"Error in upstream response",
+ *    "details":"{\"error\":{\"message\":\"<400> InternalError.Algo...\"}}"}
+ * Walk the JSON (and JSON-inside-strings) and return the most specific message.
+ */
+function digUpstreamMessage(value) {
+  const seen = [];
+  const visit = (node, depth) => {
+    if (node == null || depth > 5) return;
+    if (typeof node === "string") {
+      const text = node.trim();
+      if (!text) return;
+      if (text.startsWith("{") || text.startsWith("[")) {
+        try {
+          visit(JSON.parse(text), depth + 1);
+          return;
+        } catch {
+          /* not JSON after all — treat as plain text */
+        }
+      }
+      seen.push(text);
+      return;
+    }
+    if (typeof node !== "object") return;
+    for (const key of ["message", "details", "detail", "error", "msg", "reason"]) {
+      if (node[key] !== undefined) visit(node[key], depth + 1);
+    }
+  };
+  visit(value, 0);
+  const specific = seen.filter((text) => !GENERIC_UPSTREAM_MESSAGES.test(text.trim()));
+  return (specific.length > 0 ? specific[specific.length - 1] : seen[0]) || "";
+}
+
+/**
+ * Classify an error envelope (or an HTTP error body) coming from Qoder.
+ * Returns { status, envelopeStatus, message, raw, contextOverflow, code }.
+ */
+function classifyQoderEnvelopeError(statusVal, inner) {
+  const raw = typeof inner === "string" ? inner : JSON.stringify(inner ?? "");
+  let parsed = null;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    parsed = null;
+  }
+  const envelopeStatus = Number.isFinite(Number(statusVal)) ? Number(statusVal) : 502;
+  const status = envelopeStatus >= 400 && envelopeStatus < 600 ? envelopeStatus : 502;
+  const detail = digUpstreamMessage(parsed !== null ? parsed : raw);
+  const message = truncate(detail || raw, 1000) || `upstream status ${envelopeStatus}`;
+  const contextOverflow =
+    CONTEXT_OVERFLOW_PATTERN.test(message) || CONTEXT_OVERFLOW_PATTERN.test(raw);
+  return {
+    status,
+    envelopeStatus,
+    message,
+    raw: truncate(raw, 2000),
+    contextOverflow,
+    code: contextOverflow
+      ? "context_length_exceeded"
+      : status >= 500
+        ? "upstream_error"
+        : "provider_error",
+  };
+}
+
+/**
+ * Client-facing wording. Context overflow deliberately reuses the phrasing
+ * OpenAI/Claude clients pattern-match on ("maximum context length",
+ * "prompt is too long", "reduce the length") so they compact automatically
+ * instead of showing an opaque failure.
+ */
+function formatQoderErrorMessage(info, opts = {}) {
+  const { modelKey = null } = opts || {};
+  const where = modelKey ? `qoder/${modelKey}` : "qoder";
+  if (info.contextOverflow) {
+    const detail = info.message || "";
+    // Qoder's own overflow text already uses the canonical OpenAI wording
+    // ("This model's maximum context length is N tokens. However, you requested
+    // M tokens ... Please reduce the length ..."). Pass it through verbatim —
+    // clients pattern-match on exactly those phrases to trigger a compaction,
+    // and nesting our own sentence around it only makes the error unreadable.
+    if (/maximum context length|reduce the length/i.test(detail)) {
+      return `${where}: ${detail}`;
+    }
+    return (
+      `${where}: maximum context length exceeded (prompt is too long / input is too long). ` +
+      `Please reduce the length of your messages or compact the conversation, then retry. ` +
+      `Upstream detail: ${detail}`
+    );
+  }
+  return `qoder upstream error ${info.envelopeStatus} from ${where}: ${info.message}`;
+}
+
+function buildQoderEnvelopeErrorResponse(info, opts = {}) {
+  const message = truncate(formatQoderErrorMessage(info, opts), 1600);
+  return new Response(
+    JSON.stringify({
+      error: {
+        message,
+        type: info.status >= 500 ? "server_error" : "invalid_request_error",
+        code: info.code,
+        ...(info.contextOverflow ? { param: "messages" } : {}),
+      },
+    }),
+    { status: info.status, headers: { "Content-Type": "application/json" } },
+  );
+}
+
 function replayQoderResponse(response, reader, chunks) {
   const headers = new Headers(response.headers);
   headers.delete("content-length");
@@ -194,6 +324,14 @@ async function peekStreamQueueInfo(response) {
           return { queued: true, queueCount: null, reason: info.reason, response: null };
         }
       }
+      if (statusVal >= 400) {
+        // Hard upstream failure (context overflow, invalid history, moderation,
+        // ...). Nothing has been streamed to the client yet, so we can still
+        // answer with a proper HTTP error.
+        const info = classifyQoderEnvelopeError(statusVal, inner);
+        try { await reader.cancel(`qoder stream error ${statusVal}`); } catch {}
+        return { queued: false, queueCount: null, errorInfo: info, response: null };
+      }
       return { queued: false, queueCount: null, response: replay() };
     }
 
@@ -205,7 +343,7 @@ async function peekStreamQueueInfo(response) {
   }
 }
 
-async function inspectQoderResponse(response) {
+async function inspectQoderResponse(response, ctx = {}) {
   if (response.status === 403) {
     const info = await readQueueInfo(response);
     return { ...info, source: "http", response: info.queued ? null : response };
@@ -240,7 +378,21 @@ async function inspectQoderResponse(response) {
 
   if (response.ok) {
     const peeked = await peekStreamQueueInfo(response);
-    return { ...peeked, source: "stream" };
+    if (peeked.errorInfo) {
+      const info = peeked.errorInfo;
+      ctx?.log?.warn?.(
+        "QODER",
+        `upstream envelope error ${info.envelopeStatus}${info.contextOverflow ? " (context overflow)" : ""} · ${info.raw}`,
+      );
+      return {
+        queued: false,
+        queueCount: null,
+        source: "stream",
+        errorInfo: info,
+        response: buildQoderEnvelopeErrorResponse(info, ctx),
+      };
+    }
+    return { ...peeked, errorInfo: null, source: "stream" };
   }
 
   return { queued: false, queueCount: null, source: "http", response };
@@ -270,6 +422,7 @@ function createQoderQueueRetryResponse({
   retryOptions = QUEUE_RETRY,
   timeoutRetryOptions = TIMEOUT_RETRY,
   keepaliveMs = QODER_KEEPALIVE_MS,
+  inspectCtx = {},
   sleepFn = sleep,
 }) {
   const encoder = new TextEncoder();
@@ -351,16 +504,23 @@ function createQoderQueueRetryResponse({
               return;
             }
 
-            const inspected = await inspectQoderResponse(response);
+            const inspected = await inspectQoderResponse(response, inspectCtx);
             queueInfo = inspected;
 
             if (queueInfo.queued) continue;
             if (!inspected.response?.ok) {
+              // The keep-alive stream already sent HTTP 200, so the failure can
+              // only be reported in-band. Use the classified message (nested
+              // Qoder errors are otherwise unreadable) instead of the raw body.
               let message = `upstream status ${inspected.response?.status || 502}`;
-              try {
-                const text = await inspected.response.text();
-                if (text) message = text;
-              } catch {}
+              if (inspected.errorInfo) {
+                message = formatQoderErrorMessage(inspected.errorInfo, inspectCtx);
+              } else {
+                try {
+                  const text = await inspected.response.text();
+                  if (text) message = text;
+                } catch {}
+              }
               error(message);
               return;
             }
@@ -737,6 +897,14 @@ function wrapQoderSSE(response, model, opts = {}) {
     const inner = typeof envelope.body === "string" ? envelope.body : "";
     if (statusVal !== 200) {
       const msg = inner || `upstream status ${statusVal}`;
+      // Headers are already on the wire, so this turn can only fail in-band.
+      // Log the untruncated upstream detail — the client-facing chunk below is
+      // deliberately short.
+      const info = classifyQoderEnvelopeError(statusVal, inner);
+      log?.warn?.(
+        "QODER",
+        `mid-stream envelope error ${info.envelopeStatus}${info.contextOverflow ? " (context overflow)" : ""} · ${info.raw || msg}`,
+      );
       const errChunk = JSON.stringify({
         id: `qoder-error-${Date.now()}`,
         object: "chat.completion.chunk",
@@ -1044,8 +1212,24 @@ export class QoderExecutor extends BaseExecutor {
       return fetchRequest(currentAttemptRequest);
     };
 
+    // Context for error classification: which qoder model key the failure
+    // belongs to (so the client-facing message names it) plus the logger.
+    const inspectCtx = { log, modelKey: qoderKey };
+
     let response = await doFetch();
-    const inspected = await inspectQoderResponse(response);
+    const inspected = await inspectQoderResponse(response, inspectCtx);
+
+    if (inspected.errorInfo) {
+      // Hard upstream rejection (context overflow / bad history / moderation).
+      // Hand it back as a real HTTP error so chatCore records a failure and the
+      // client can recover — never as assistant text.
+      return {
+        response: inspected.response,
+        url,
+        headers: currentAttemptRequest.headers,
+        transformedBody: currentAttemptRequest.payload,
+      };
+    }
 
     if (inspected.queued) {
       const queued = createQoderQueueRetryResponse({
@@ -1055,6 +1239,7 @@ export class QoderExecutor extends BaseExecutor {
         log,
         doFetch,
         timeoutRetryOptions: TIMEOUT_RETRY,
+        inspectCtx,
       });
       return {
         response: queued,
@@ -1090,8 +1275,8 @@ export class QoderExecutor extends BaseExecutor {
       const built = await buildQoderRequestBody({ model, body: nudgedBody, credentials, log, proxyOptions, signal });
       const req = makeAttemptRequest(true, built.payload);
       const resp = await fetchRequest(req);
-      const inspectedNext = await inspectQoderResponse(resp);
-      if (inspectedNext.queued || !inspectedNext.response?.ok) return null;
+      const inspectedNext = await inspectQoderResponse(resp, inspectCtx);
+      if (inspectedNext.queued || inspectedNext.errorInfo || !inspectedNext.response?.ok) return null;
       return wrapQoderSSE(inspectedNext.response, `qoder/${qoderKey}`);
     };
 
@@ -1101,6 +1286,36 @@ export class QoderExecutor extends BaseExecutor {
       log,
     });
     return { response: wrapped, url, headers: currentAttemptRequest.headers, transformedBody: currentAttemptRequest.payload };
+  }
+
+  /**
+   * chatCore calls this for non-2xx provider responses. Qoder's HTTP-level
+   * error bodies nest the real message ({"code":"provider_error","message":
+   * "Error in upstream response","details":"{\"error\":{\"message\":\"<400> ...\"}}"}),
+   * so decode it and flag context overflow with client-recognisable wording.
+   */
+  parseError(response, bodyText) {
+    const status = response?.status;
+    if (!Number.isFinite(Number(status))) return null;
+    // chatCore re-parses the body of whatever we hand back, including the
+    // envelope-error Response built above. Recognise an already-formatted
+    // OpenAI-style error body and pass its message through untouched, otherwise
+    // the client sees our sentence wrapped inside our sentence.
+    try {
+      const parsed = JSON.parse(bodyText || "");
+      const message = parsed?.error?.message;
+      if (typeof message === "string" && message.trim()) {
+        return { status: Number(status), message: truncate(message, 1600) };
+      }
+    } catch {
+      /* not JSON — fall through to Qoder's nested shape */
+    }
+    const info = classifyQoderEnvelopeError(Number(status), bodyText || "");
+    if (!info.message) return null;
+    return {
+      status: info.status,
+      message: truncate(formatQoderErrorMessage(info, { modelKey: null, maxInputTokens: 0 }), 1600),
+    };
   }
 
   // Qoder device tokens don't refresh through OAuth — the upstream returns
@@ -1127,4 +1342,8 @@ export const __test__ = {
   buildQoderRequestBody,
   createQoderQueueRetryResponse,
   inspectQoderResponse,
+  classifyQoderEnvelopeError,
+  formatQoderErrorMessage,
+  buildQoderEnvelopeErrorResponse,
+  digUpstreamMessage,
 };

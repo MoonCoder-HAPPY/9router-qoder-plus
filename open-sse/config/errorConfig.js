@@ -63,6 +63,16 @@ export const ERROR_RULES = [
   // backoff instead of the generic 2-minute 403 lockout. Text rules are
   // matched before status rules, so this wins over { status: 403 }.
   { text: "isqueued",               backoff: true },
+  // 9router-fix: payload-level rejections are NOT account faults. Retrying the
+  // same oversized/invalid body against the next account only walks (and locks)
+  // the whole pool, so these short-circuit the fallback loop. Matched before the
+  // status rules below and before the generic transient default.
+  { text: "maximum context length",  noFallback: true },
+  { text: "range of input length",   noFallback: true },
+  { text: "context_length_exceeded", noFallback: true },
+  { text: "prompt is too long",      noFallback: true },
+  { text: "input is too long",       noFallback: true },
+  { text: "reduce the length",       noFallback: true },
   { text: "no credentials",           cooldownMs: COOLDOWN.long },
   { text: "request not allowed",      cooldownMs: COOLDOWN.short },
   { text: "improperly formed request", cooldownMs: COOLDOWN.long },
@@ -73,6 +83,9 @@ export const ERROR_RULES = [
   { text: "overloaded",               backoff: true },
 
   // --- Status-based rules (fallback when text doesn't match) ---
+  // 400 = the request body itself was rejected (bad history, over-context,
+  // moderation). Another account would reject it identically, so don't rotate.
+  { status: 400, noFallback: true },
   { status: 401, cooldownMs: COOLDOWN.long },
   { status: 402, cooldownMs: COOLDOWN.long },
   { status: 403, cooldownMs: COOLDOWN.long },
