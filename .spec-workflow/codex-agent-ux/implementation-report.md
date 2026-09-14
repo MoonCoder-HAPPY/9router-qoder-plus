@@ -47,3 +47,8 @@ C. 冻结当前 70 为基线，CI 仅跑受影响子集（覆盖最窄）。
 ## 下一步（前沿）
 
 可立即开工：**02**（Codex 适配配置骨架）、**04**（reasoning 保真与往返）、**05**（错误码映射）；**03** 待 02；**06** 待 02+05；**07** 待 03；**08** 待 05；**09** 待 03/05/06/07；**10** 收口（生产切换前必停）。
+## 工单 02 进度（切片 1/3）
+
+- 已完成：`src/shared/services/codexCompat.js`（默认值、校验、`computeAutoCompactLimit`、`getCodexCompatSettings`）+ `tests/unit/codex-compat.test.js`（5/5 通过）
+- 待办：`settingsRepo` 默认段与 `settings` API 读写、Dashboard「Codex 适配」分组 + `zh-CN` 文案
+- 说明：03/06/07/08 可直接 `import` 该模块，不必等 02 全部完成
