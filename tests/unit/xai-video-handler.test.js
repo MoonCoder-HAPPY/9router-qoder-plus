@@ -19,6 +19,8 @@ const authMocks = vi.hoisted(() => ({
   clearAccountError: vi.fn(async () => {}),
   extractApiKey: vi.fn(() => null),
   isValidApiKey: vi.fn(async () => true),
+  buildApiKeyOptions: vi.fn(async () => ({ apiKeyRecord: null, apiKeyPolicy: null, apiKeyValue: null })),
+  policyCredentialsResponse: vi.fn(() => null),
 }));
 const tokenMocks = vi.hoisted(() => ({
   checkAndRefreshToken: vi.fn(async (_p, creds) => creds),

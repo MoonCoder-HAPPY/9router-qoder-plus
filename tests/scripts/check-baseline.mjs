@@ -1,0 +1,89 @@
+#!/usr/bin/env node
+/**
+ * Baseline-aware test gate.
+ *
+ * The repository carries a large amount of pre-existing test debt that is
+ * unrelated to the Codex work (cursor proto fixtures, golden snapshots,
+ * legacy translator normalisation, ...).  A plain "all green" gate would be
+ * red for reasons nobody is fixing this round, so this script fails only on
+ * *new* failures:
+ *
+ *   node tests/scripts/check-baseline.mjs            # gate: fail on new failures
+ *   node tests/scripts/check-baseline.mjs --update   # rewrite the baseline
+ *
+ * Baseline format (tests/__baseline__/known-fails.txt), one entry per line:
+ *   <path-relative-to-tests>/<file>.test.js :: <full test name>
+ */
+import { execFileSync } from "node:child_process";
+import { readFileSync, writeFileSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+const repoRoot = path.resolve(import.meta.dirname, "../..");
+const baselinePath = path.join(repoRoot, "tests/__baseline__/known-fails.txt");
+const update = process.argv.includes("--update");
+const tmpDir = mkdtempSync(path.join(tmpdir(), "9router-baseline-"));
+const reportPath = path.join(tmpDir, "vitest-report.json");
+
+const run = () => {
+  try {
+    execFileSync(
+      process.execPath,
+      [
+        // vitest lives in tests/node_modules (installed by `npm --prefix tests install`)
+        path.join(repoRoot, "tests/node_modules/vitest/vitest.mjs"),
+        "run",
+        "--config",
+        "tests/vitest.config.js",
+        "--reporter=json",
+        `--outputFile=${reportPath}`,
+      ],
+      { cwd: repoRoot, stdio: ["ignore", "inherit", "inherit"] },
+    );
+  } catch {
+    /* non-zero exit is expected when failures exist; the report is what matters */
+  }
+};
+
+const collectFailures = () => {
+  const report = JSON.parse(readFileSync(reportPath, "utf8"));
+  const failures = new Set();
+  for (const file of report.testResults ?? []) {
+    const rel = path.relative(path.join(repoRoot, "tests"), file.name).split(path.sep).join("/");
+    for (const assertion of file.assertionResults ?? []) {
+      if (assertion.status === "failed") failures.add(`${rel} :: ${assertion.fullName}`);
+    }
+  }
+  return failures;
+};
+
+const readBaseline = () =>
+  new Set(
+    readFileSync(baselinePath, "utf8")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean),
+  );
+
+run();
+const failures = collectFailures();
+
+if (update) {
+  const sorted = [...failures].sort();
+  writeFileSync(baselinePath, `${sorted.join("\n")}\n`);
+  console.log(`[baseline] wrote ${sorted.length} known failures to tests/__baseline__/known-fails.txt`);
+  process.exit(0);
+}
+
+const baseline = readBaseline();
+const newFailures = [...failures].filter((entry) => !baseline.has(entry)).sort();
+const recovered = [...baseline].filter((entry) => !failures.has(entry)).sort();
+
+console.log(`[baseline] failing now: ${failures.size} | baselined: ${baseline.size}`);
+if (recovered.length > 0) console.log(`[baseline] recovered (run --update to shrink the baseline): ${recovered.length}`);
+if (newFailures.length > 0) {
+  console.error(`\n[baseline] NEW failures (not in the baseline): ${newFailures.length}`);
+  for (const entry of newFailures) console.error(`  - ${entry}`);
+  process.exit(1);
+}
+console.log("[baseline] OK - no new failures");

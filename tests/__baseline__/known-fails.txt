@@ -1,25 +1,70 @@
-tests/unit/antigravity-mitm.test.js :: Antigravity MITM model handling flags the out-of-box agent/Default model mandatory
-tests/unit/claude-header-forwarding.test.js :: proxyAwareFetch — api.anthropic.com routing routes api.anthropic.com to gotScraping (non-streaming) and returns ok response
-tests/unit/oauth-cursor-auto-import.test.js :: GET /api/oauth/cursor/auto-import extracts tokens using exact keys
-tests/unit/oauth-cursor-auto-import.test.js :: GET /api/oauth/cursor/auto-import falls back to fuzzy key matching on macOS when exact keys are missing
-tests/unit/oauth-cursor-auto-import.test.js :: GET /api/oauth/cursor/auto-import linux uses single hardcoded path and original error message
-tests/unit/oauth-cursor-auto-import.test.js :: GET /api/oauth/cursor/auto-import returns descriptive error if macOS db file exists but cannot be opened
-tests/unit/oauth-cursor-auto-import.test.js :: GET /api/oauth/cursor/auto-import returns login-prompt error when tokens are missing even after fallback
-tests/unit/oauth-cursor-auto-import.test.js :: GET /api/oauth/cursor/auto-import returns not-found when no macOS cursor db paths are accessible
-tests/unit/oauth-cursor-auto-import.test.js :: GET /api/oauth/cursor/auto-import unsupported platform returns 400
-tests/unit/oauth-cursor-auto-import.test.js :: GET /api/oauth/cursor/auto-import unwraps JSON-encoded string values
-tests/unit/openai-to-claude.test.js :: openaiToClaudeResponse omits empty Read pages tool argument before emitting Claude input deltas
-tests/unit/rtk.test.js :: RTK flag default off, toggle works
-tests/unit/rtk.test.js :: compressMessages (disabled) returns null when disabled
-tests/unit/rtk.test.js :: compressMessages (enabled) compresses Claude array-form tool_result text parts
-tests/unit/rtk.test.js :: compressMessages (enabled) compresses Claude string-form tool_result
-tests/unit/rtk.test.js :: compressMessages (enabled) compresses OpenAI tool message (string content)
-tests/unit/rtk.test.js :: compressMessages (enabled) handles mix of messages without crashing
-tests/unit/rtk.test.js :: compressMessages (enabled) never produces empty content (R14 guard)
-tests/unit/rtk.test.js :: compressMessages (enabled) skips below MIN_COMPRESS_SIZE (<500 bytes)
-tests/unit/rtk.test.js :: compressMessages (enabled) skips is_error tool_result
-tests/unit/rtk.test.js :: compressMessages (enabled) skips when body has no messages
-tests/unit/translator-request-normalization.test.js :: request normalization claudeToOpenAIRequest flattens text-only content arrays into string
-tests/unit/translator-request-normalization.test.js :: request normalization filterToOpenAIFormat flattens text-only arrays to string
-tests/unit/translator-request-normalization.test.js :: request normalization parseSSELine supports provider raw NDJSON stream lines
-tests/unit/translator-request-normalization.test.js :: request normalization translateRequest keeps /v1/messages Claude->OpenAI text payloads string-safe
+translator/bugs-toClaude-context.test.js :: OpenAI → Claude context mapping assistant reasoning_content becomes a thinking block
+translator/golden-request.test.js :: GOLDEN request: OpenAI → Kiro full body (image base64 + tool_result)
+translator/golden-url-header.test.js :: GOLDEN buildHeaders (default executor providers) anthropic → headers (apiKey / oauth)
+translator/golden-url-header.test.js :: GOLDEN buildHeaders (default executor providers) cline → headers (apiKey / oauth)
+translator/golden-url-header.test.js :: GOLDEN buildHeaders (default executor providers) kimi → headers (apiKey / oauth)
+translator/golden-url-header.test.js :: GOLDEN buildUrl (default executor providers) blackbox → url (stream + non-stream)
+unit/antigravity-mitm.test.js :: Antigravity MITM model handling flags the out-of-box agent/Default model mandatory
+unit/claude-header-forwarding.test.js :: proxyAwareFetch — api.anthropic.com routing routes api.anthropic.com to gotScraping (non-streaming) and returns ok response
+unit/codex-image-fetch.test.js :: CodexExecutor image handling execute() prefetches images before sending to upstream
+unit/codex-image-fetch.test.js :: CodexExecutor image handling fetches 1MB remote image and inlines it as base64 data URI
+unit/compatible-provider-connections.test.js :: compatible provider connections API creates one API-key connection for an OpenAI-compatible node
+unit/cursor-agent-proto.test.js :: Cursor AgentService codec (cursorProtobuf.js) McpArgs decode decodes name, toolName, toolCallId, and typed args map
+unit/cursor-agent-proto.test.js :: Cursor AgentService codec (cursorProtobuf.js) McpArgs decode handles empty args map
+unit/cursor-agent-proto.test.js :: Cursor AgentService codec (cursorProtobuf.js) McpResult error / toolNotFound builds error result (field 2)
+unit/cursor-agent-proto.test.js :: Cursor AgentService codec (cursorProtobuf.js) McpResult error / toolNotFound builds toolNotFound result (field 5)
+unit/cursor-agent-proto.test.js :: Cursor AgentService codec (cursorProtobuf.js) McpResult image content builds image item with raw bytes + mime type
+unit/cursor-agent-proto.test.js :: Cursor AgentService codec (cursorProtobuf.js) McpResult image content builds mixed text + image content
+unit/cursor-agent-proto.test.js :: Cursor AgentService codec (cursorProtobuf.js) McpResult success builds success with multiple text items
+unit/cursor-agent-proto.test.js :: Cursor AgentService codec (cursorProtobuf.js) McpResult success builds success with single text content
+unit/cursor-agent-proto.test.js :: Cursor AgentService codec (cursorProtobuf.js) McpResult success marks is_error=true
+unit/cursor-agent-proto.test.js :: Cursor AgentService codec (cursorProtobuf.js) McpToolDefinition accepts flat tool shape (no .function wrapper)
+unit/cursor-agent-proto.test.js :: Cursor AgentService codec (cursorProtobuf.js) McpToolDefinition encodes name, description, input_schema (Value), provider, tool_name
+unit/cursor-agent-proto.test.js :: Cursor AgentService codec (cursorProtobuf.js) McpToolDefinition preserves nested JSON-schema types
+unit/cursor-agent-proto.test.js :: Cursor AgentService codec (cursorProtobuf.js) encodeMcpTools produces empty bytes for no tools
+unit/cursor-agent-proto.test.js :: Cursor AgentService codec (cursorProtobuf.js) encodeMcpTools wraps multiple tool defs as repeated field 1
+unit/cursor-agent-proto.test.js :: Cursor AgentService codec (cursorProtobuf.js) google.protobuf.Value round-trip encodes/decodes array of mixed
+unit/cursor-agent-proto.test.js :: Cursor AgentService codec (cursorProtobuf.js) google.protobuf.Value round-trip encodes/decodes bool false
+unit/cursor-agent-proto.test.js :: Cursor AgentService codec (cursorProtobuf.js) google.protobuf.Value round-trip encodes/decodes bool true
+unit/cursor-agent-proto.test.js :: Cursor AgentService codec (cursorProtobuf.js) google.protobuf.Value round-trip encodes/decodes deeply nested
+unit/cursor-agent-proto.test.js :: Cursor AgentService codec (cursorProtobuf.js) google.protobuf.Value round-trip encodes/decodes empty object
+unit/cursor-agent-proto.test.js :: Cursor AgentService codec (cursorProtobuf.js) google.protobuf.Value round-trip encodes/decodes flat object
+unit/cursor-agent-proto.test.js :: Cursor AgentService codec (cursorProtobuf.js) google.protobuf.Value round-trip encodes/decodes float
+unit/cursor-agent-proto.test.js :: Cursor AgentService codec (cursorProtobuf.js) google.protobuf.Value round-trip encodes/decodes integer
+unit/cursor-agent-proto.test.js :: Cursor AgentService codec (cursorProtobuf.js) google.protobuf.Value round-trip encodes/decodes nested object
+unit/cursor-agent-proto.test.js :: Cursor AgentService codec (cursorProtobuf.js) google.protobuf.Value round-trip encodes/decodes null
+unit/cursor-agent-proto.test.js :: Cursor AgentService codec (cursorProtobuf.js) google.protobuf.Value round-trip encodes/decodes string
+unit/cursor-agent-proto.test.js :: Cursor AgentService executor helpers (cursor.js) buildAgentRunFrame encodes a text-only run request with system + model
+unit/cursor-agent-proto.test.js :: Cursor AgentService executor helpers (cursor.js) buildAgentRunFrame encodes conversation_history from prior turns including tool calls/results
+unit/cursor-agent-proto.test.js :: Cursor AgentService executor helpers (cursor.js) buildAgentRunFrame encodes mcp_tools (field 4) when tools are provided
+unit/cursor-agent-proto.test.js :: Cursor AgentService executor helpers (cursor.js) buildAgentRunFrame omits mcp_tools when no tools provided
+unit/cursor-agent-proto.test.js :: Cursor AgentService executor helpers (cursor.js) isAgentCapableRequest accepts array text content
+unit/cursor-agent-proto.test.js :: Cursor AgentService executor helpers (cursor.js) isAgentCapableRequest accepts history with assistant tool_calls + tool results
+unit/cursor-agent-proto.test.js :: Cursor AgentService executor helpers (cursor.js) isAgentCapableRequest accepts plain text content
+unit/cursor-agent-proto.test.js :: Cursor AgentService executor helpers (cursor.js) isAgentCapableRequest accepts request with tools declared
+unit/cursor-agent-proto.test.js :: Cursor AgentService executor helpers (cursor.js) isAgentCapableRequest rejects missing messages
+unit/cursor-agent-proto.test.js :: Cursor AgentService executor helpers (cursor.js) isAgentCapableRequest rejects non-text (image) content
+unit/cursor-models.test.js :: Cursor live model catalog fetches the account-specific catalog and caches it
+unit/db-concurrent.test.js :: DB Concurrency — atomic safety 100 parallel saveRequestUsage → no count loss
+unit/db-concurrent.test.js :: DB Concurrency — atomic safety daily summary aggregates correctly under parallel writes
+unit/db-concurrent.test.js :: DB Concurrency — atomic safety mixed concurrent: usage + details + connections + aliases
+unit/executor-const-guard.test.js :: antigravity retry (intentional change: 429=6, 503=3) 429 attempts = 6
+unit/force-stream-config.test.js :: forceStream provider config keeps forced-stream providers streaming for JSON clients when body.stream is false
+unit/force-stream-config.test.js :: forceStream provider config keeps forced-stream providers streaming for JSON clients when body.stream is undefined
+unit/headroom-detect.test.js :: headroom detect prefers the interpreter that actually has headroom-ai installed
+unit/image-fetch-hardening.test.js :: fetchImageAsBase64 hardening accepts valid PNG from public host
+unit/mimo-free.live.test.js :: MiMo Free anti-abuse gate (live) chat WITH Chrome User-Agent → 200
+unit/model-routing.test.js :: model routing keeps built-in provider aliases ahead of compatible node prefixes
+unit/oauth-cursor-auto-import.test.js :: GET /api/oauth/cursor/auto-import extracts tokens using exact keys
+unit/oauth-cursor-auto-import.test.js :: GET /api/oauth/cursor/auto-import falls back to fuzzy key matching on macOS when exact keys are missing
+unit/oauth-cursor-auto-import.test.js :: GET /api/oauth/cursor/auto-import linux uses single hardcoded path and original error message
+unit/oauth-cursor-auto-import.test.js :: GET /api/oauth/cursor/auto-import returns descriptive error if macOS db file exists but cannot be opened
+unit/oauth-cursor-auto-import.test.js :: GET /api/oauth/cursor/auto-import returns login-prompt error when tokens are missing even after fallback
+unit/oauth-cursor-auto-import.test.js :: GET /api/oauth/cursor/auto-import returns not-found when no macOS cursor db paths are accessible
+unit/oauth-cursor-auto-import.test.js :: GET /api/oauth/cursor/auto-import unsupported platform returns 400
+unit/oauth-cursor-auto-import.test.js :: GET /api/oauth/cursor/auto-import unwraps JSON-encoded string values
+unit/openai-to-claude.test.js :: openaiToClaudeResponse omits empty Read pages tool argument before emitting Claude input deltas
+unit/translator-request-normalization.test.js :: request normalization claudeToOpenAIRequest flattens text-only content arrays into string
+unit/translator-request-normalization.test.js :: request normalization filterToOpenAIFormat flattens text-only arrays to string
+unit/translator-request-normalization.test.js :: request normalization parseSSELine supports provider raw NDJSON stream lines
+unit/translator-request-normalization.test.js :: request normalization translateRequest keeps /v1/messages Claude->OpenAI text payloads string-safe

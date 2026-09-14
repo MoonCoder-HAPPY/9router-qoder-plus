@@ -3,7 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const MODAL_SOURCE = fs.readFileSync(
-  path.resolve("src/app/(dashboard)/dashboard/endpoint/components/ApiKeyRestrictionsModal.js"),
+  path.resolve(import.meta.dirname, "../../src/app/(dashboard)/dashboard/endpoint/components/ApiKeyRestrictionsModal.js"),
   "utf8"
 );
 

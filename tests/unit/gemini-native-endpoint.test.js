@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => ({
   getProviderCredentials: vi.fn(),
   markAccountUnavailable: vi.fn(),
   clearAccountError: vi.fn(),
+  buildApiKeyOptions: vi.fn(async () => ({ apiKeyRecord: null, apiKeyPolicy: null, apiKeyValue: null })),
+  policyCredentialsResponse: vi.fn(() => null),
 }));
 
 vi.mock("@/sse/handlers/chat.js", () => ({
@@ -18,6 +20,8 @@ vi.mock("@/sse/services/auth.js", () => ({
   isValidApiKey: mocks.isValidApiKey,
   markAccountUnavailable: mocks.markAccountUnavailable,
   clearAccountError: mocks.clearAccountError,
+  buildApiKeyOptions: mocks.buildApiKeyOptions,
+  policyCredentialsResponse: mocks.policyCredentialsResponse,
 }));
 
 vi.mock("@/lib/localDb", () => ({

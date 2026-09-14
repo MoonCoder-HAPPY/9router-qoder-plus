@@ -3,7 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const ZH_CN_LITERALS = JSON.parse(
-  fs.readFileSync(path.resolve("public/i18n/literals/zh-CN.json"), "utf8")
+  fs.readFileSync(path.resolve(import.meta.dirname, "../../public/i18n/literals/zh-CN.json"), "utf8")
 );
 
 describe("zh-CN literals", () => {

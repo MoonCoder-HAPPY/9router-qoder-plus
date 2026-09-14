@@ -47,7 +47,13 @@ describe("bug: Claude → OpenAI bridge data loss", () => {
       ],
     });
     const toolMsg = out.messages.find((m) => m.role === "tool");
-    expect(toolMsg?.content, "image in tool_result lost").not.toMatch(/^\[/);
+    // The tool message carries a short human-readable placeholder; the image
+    // itself must travel in the following user message (asserted below). The
+    // intent of this assertion is "no raw JSON serialization of the block
+    // array", so match on serialized-JSON shape instead of a leading bracket
+    // (the documented placeholder legitimately starts with one).
+    expect(toolMsg?.content, "image in tool_result lost").not.toContain('{"type"');
+    expect(toolMsg?.content?.length ?? 0, "placeholder should stay short").toBeLessThan(120);
 
     const imageMsg = out.messages.find((m) =>
       Array.isArray(m.content) && m.content.some((c) => c.type === "image_url")
