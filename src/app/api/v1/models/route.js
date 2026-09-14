@@ -18,6 +18,7 @@ import { updateProviderCredentials } from "@/sse/services/tokenRefresh";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { capabilitiesFromServiceKind, getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
 import { decorateQoderModelsForPublic } from "@/lib/qoder/publicModels.js";
+import { buildCodexCatalogEntries } from "@/lib/qoder/codexCatalog.js";
 
 // Per-provider live model resolvers. Each receives a connection record and
 // returns { models: [{ id, name? }, ...] } | null on failure.
@@ -522,6 +523,9 @@ export async function buildModelsList(kindFilter, options = {}) {
           if (Number.isFinite(liveMaxOutput) && liveMaxOutput > 0) {
             caps = { ...caps, maxOutput: liveMaxOutput };
           }
+          // Qoder publishes vision capability in the live catalog (is_vl); the pattern-
+          // matched defaults claimed vision:false for every Qoder model.
+          caps = { ...caps, vision: qoderPublicModel.isVL === true };
         }
         if (caps) model.capabilities = caps;
         models.push(model);
@@ -581,7 +585,10 @@ export async function GET(request) {
     // Detect cross-instance recursive /models fetch (another 9router fetching our /models)
     const skipDynamicFetch = request?.headers?.get(INTERNAL_MODELS_FETCH_HEADER) === "1";
     const data = await buildModelsList([LLM_KIND], { skipDynamicFetch });
-    return Response.json({ object: "list", data }, {
+    // Codex reads `models[]` (ModelInfo) and ignores `data[]`; keep both so existing
+    // OpenAI-compatible clients and the dashboard are unaffected.
+    const codexModels = buildCodexCatalogEntries(data);
+    return Response.json({ object: "list", data, ...(codexModels.length > 0 ? { models: codexModels } : {}) }, {
       headers: { "Access-Control-Allow-Origin": "*" },
     });
   } catch (error) {
