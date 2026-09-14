@@ -8,6 +8,7 @@ import { buildChunk } from "../concerns/chunk.js";
 import { buildUsage } from "../concerns/usage.js";
 import { fallbackToolCallId } from "../concerns/toolCall.js";
 import { reasoningDelta, extractReasoningText } from "../concerns/reasoning.js";
+import { buildReasoningEncryptedContent } from "../concerns/reasoningEnvelope.js";
 import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM, OPENAI_FINISH, MODEL_FALLBACK } from "../schema/index.js";
 
 /**
@@ -37,6 +38,7 @@ export function openaiToOpenAIResponsesResponse(chunk, state) {
   if (!state.started) {
     state.started = true;
     state.responseId = chunk.id ? `resp_${chunk.id}` : state.responseId;
+    state.model = state.model || chunk.model || null;
     
     emit("response.created", {
       type: "response.created",
@@ -121,19 +123,21 @@ export function openaiToOpenAIResponsesResponse(chunk, state) {
 // Helper functions
 function startReasoning(state, emit, idx) {
   if (!state.reasoningId) {
-    state.reasoningId = `rs_${state.responseId}_${idx}`;
+    // Codex compares the item id of the announcement with later deltas and
+    // rejects ids longer than 64 chars, so keep a single stable short id.
+    state.reasoningId = `rs_${state.responseId}_${idx}`.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64);
     state.reasoningIndex = state.nextOutputIndex++;
     
     emit("response.output_item.added", {
       type: "response.output_item.added",
-      output_index: idx,
+      output_index: state.reasoningIndex,
       item: { id: state.reasoningId, type: RESPONSES_ITEM.REASONING, summary: [] }
     });
 
     emit("response.reasoning_summary_part.added", {
       type: "response.reasoning_summary_part.added",
       item_id: state.reasoningId,
-      output_index: idx,
+      output_index: state.reasoningIndex,
       summary_index: 0,
       part: { type: RESPONSES_ITEM.SUMMARY_TEXT, text: "" }
     });
@@ -179,7 +183,9 @@ function closeReasoning(state, emit) {
       item: {
         id: state.reasoningId,
         type: RESPONSES_ITEM.REASONING,
-        summary: [{ type: RESPONSES_ITEM.SUMMARY_TEXT, text: state.reasoningBuf }]
+        summary: [{ type: RESPONSES_ITEM.SUMMARY_TEXT, text: state.reasoningBuf }],
+        // Codex round-trips this opaque blob on the next turn (store:false continuity).
+        encrypted_content: buildReasoningEncryptedContent({ model: state.model, text: state.reasoningBuf })
       }
     });
   }

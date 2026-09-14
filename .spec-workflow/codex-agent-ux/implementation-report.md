@@ -52,3 +52,10 @@ C. 冻结当前 70 为基线，CI 仅跑受影响子集（覆盖最窄）。
 - 已完成：`src/shared/services/codexCompat.js`（默认值、校验、`computeAutoCompactLimit`、`getCodexCompatSettings`）+ `tests/unit/codex-compat.test.js`（5/5 通过）
 - 待办：`settingsRepo` 默认段与 `settings` API 读写、Dashboard「Codex 适配」分组 + `zh-CN` 文案
 - 说明：03/06/07/08 可直接 `import` 该模块，不必等 02 全部完成
+## 工单 04（reasoning 保真与最近一轮往返）— 完成
+
+- 新增 `open-sse/translator/concerns/reasoningEnvelope.js`：`base64url(JSON{v,model,ts,coh,len})`，不含 CoT 全文与凭据；`parseReasoningEncryptedContent` 对外来/损坏负载返回 null
+- 响应侧：reasoning item id 稳定且 ≤64 字符、`output_index` 与 delta 一致、`summary_index` 单段、`output_item.done` 带全文 summary + 自有 `encrypted_content`
+- 请求侧：`stripEarlierReasoning` 保证只有**最近一个 assistant 轮次**保留 CoT；`encrypted_content` 原样透传（对外来密文是 opaque，不做白名单丢弃）
+- 测试：`tests/unit/codex-reasoning-roundtrip.test.js` 8/8；连带 `openai-responses-multiturn` 14/14；基线门禁 `70/70 → OK`
+- 注意：门禁在实施中捕获过 2 个回归（多轮测试断言旧的"全量保留 CoT"行为），已按 Q5 决策更新为"仅最近一轮 + 外来 blob 透传"

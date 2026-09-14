@@ -58,12 +58,28 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
     return "";
   };
 
+  // Only the most recent assistant turn keeps its chain of thought: replaying every
+  // historical reasoning trace inflates the prompt (observed 300k+ token requests) while
+  // the upstream only needs the CoT that belongs to the turn it is continuing.
+  const stripEarlierReasoning = (keepMsg) => {
+    for (const message of result.messages) {
+      if (message === keepMsg || message?.role !== ROLE.ASSISTANT) continue;
+      delete message.reasoning_content;
+      delete message.encrypted_content;
+    }
+  };
+
   const attachPendingReasoning = (msg) => {
+    if (!pendingReasoning && !pendingReasoningEncrypted) return;
     if (pendingReasoning) msg.reasoning_content = pendingReasoning;
+    // Opaque blobs are forwarded verbatim: OpenAI ciphertext, our own envelope and
+    // provider-specific strings are all just continuity tokens to us.
     if (pendingReasoningEncrypted) msg.encrypted_content = pendingReasoningEncrypted;
+    stripEarlierReasoning(msg);
     pendingReasoning = "";
     pendingReasoningEncrypted = "";
   };
+
 
   for (const item of inputItems) {
     // Determine item type - Droid CLI sends role-based items without 'type' field
