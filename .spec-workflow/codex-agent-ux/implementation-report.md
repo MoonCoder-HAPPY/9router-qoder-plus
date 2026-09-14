@@ -59,3 +59,10 @@ C. 冻结当前 70 为基线，CI 仅跑受影响子集（覆盖最窄）。
 - 请求侧：`stripEarlierReasoning` 保证只有**最近一个 assistant 轮次**保留 CoT；`encrypted_content` 原样透传（对外来密文是 opaque，不做白名单丢弃）
 - 测试：`tests/unit/codex-reasoning-roundtrip.test.js` 8/8；连带 `openai-responses-multiturn` 14/14；基线门禁 `70/70 → OK`
 - 注意：门禁在实施中捕获过 2 个回归（多轮测试断言旧的"全量保留 CoT"行为），已按 Q5 决策更新为"仅最近一轮 + 外来 blob 透传"
+## 工单 05（错误码映射）— 完成
+
+- `open-sse/config/errorConfig.js`：新增 `CODEX_ERROR_CODES`、`clampRetryAfterMs`（上限 120s）、`resolveCodexErrorCode({status,message,fallbackCode})`、`withRetryAfterHint`
+- `open-sse/utils/error.js`：`buildErrorBody(status, message, options)` 统一输出 Codex 可见 code；仅 `rate_limit_exceeded` 追加 "try again in N seconds"（Codex 用正则从 message 里解析退避时长，不读 header）
+- `open-sse/executors/qoder.js`：envelope 错误走映射表；**流内错误改为真正的 error 帧**（`{"error":{code,message}}`），不再伪造 assistant 文本 + `finish_reason=stop`
+- 测试：新增 `tests/unit/codex-error-mapping.test.js` 7/7；`qoder.test.js`、`qoder-context-overflow.test.js` 共 77/77（门禁捕获 3 处旧契约断言并已按 Q6 决策更新）
+- 基线门禁：`70/70 → OK`

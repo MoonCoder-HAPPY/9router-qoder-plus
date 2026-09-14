@@ -1,4 +1,9 @@
-import { ERROR_TYPES, DEFAULT_ERROR_MESSAGES } from "../config/errorConfig.js";
+import {
+  ERROR_TYPES,
+  DEFAULT_ERROR_MESSAGES,
+  resolveCodexErrorCode,
+  withRetryAfterHint,
+} from "../config/errorConfig.js";
 
 /**
  * Build OpenAI-compatible error response body
@@ -6,7 +11,7 @@ import { ERROR_TYPES, DEFAULT_ERROR_MESSAGES } from "../config/errorConfig.js";
  * @param {string} message - Error message
  * @returns {object} Error response object
  */
-export function buildErrorBody(statusCode, message) {
+export function buildErrorBody(statusCode, message, options = {}) {
   const errorInfo = ERROR_TYPES[statusCode] || 
     (statusCode >= 500 
       ? { type: "server_error", code: "internal_server_error" }
@@ -14,9 +19,11 @@ export function buildErrorBody(statusCode, message) {
 
   return {
     error: {
-      message: message || DEFAULT_ERROR_MESSAGES[statusCode] || "An error occurred",
+      message: (options.code || resolveCodexErrorCode({ status: statusCode, message })) === "rate_limit_exceeded"
+        ? withRetryAfterHint(message || DEFAULT_ERROR_MESSAGES[statusCode] || "An error occurred", options.retryAfterMs)
+        : message || DEFAULT_ERROR_MESSAGES[statusCode] || "An error occurred",
       type: errorInfo.type,
-      code: errorInfo.code
+      code: options.code || resolveCodexErrorCode({ status: statusCode, message }) || errorInfo.code
     }
   };
 }

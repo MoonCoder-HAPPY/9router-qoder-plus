@@ -567,7 +567,9 @@ describe("wrapQoderSSE", () => {
     const env = JSON.stringify({ statusCodeValue: 503, body: "service unavailable" });
     const wrapped = wrapQoderSSE(makeResponse([`data: ${env}\n\n`]), "qoder/lite");
     const out = await drain(wrapped);
-    expect(out).toContain("[qoder error 503");
+    // 503 / service unavailable maps to the overload code Codex retries on.
+    expect(out).toContain('"code":"server_is_overloaded"');
+    expect(out).not.toContain("[qoder error");
     expect(out).toContain("data: [DONE]\n\n");
   });
 

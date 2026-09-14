@@ -36,6 +36,7 @@ import {
   QODER_MODEL_MAP,
 } from "../shared/qoder/constants.js";
 import { getQoderModelConfig, resolveQoderModels } from "../services/qoderModels.js";
+import { resolveCodexErrorCode, withRetryAfterHint } from "../config/errorConfig.js";
 
 // ============ 9router-fix: Qoder queue-aware retry patch ============
 // Qoder rate-limits by returning HTTP 403 with a nested body containing
@@ -236,7 +237,7 @@ function buildQoderEnvelopeErrorResponse(info, opts = {}) {
       error: {
         message,
         type: info.status >= 500 ? "server_error" : "invalid_request_error",
-        code: info.code,
+        code: resolveCodexErrorCode({ status: info.status, message: info.message, fallbackCode: info.code }),
         ...(info.contextOverflow ? { param: "messages" } : {}),
       },
     }),
@@ -905,14 +906,16 @@ function wrapQoderSSE(response, model, opts = {}) {
         "QODER",
         `mid-stream envelope error ${info.envelopeStatus}${info.contextOverflow ? " (context overflow)" : ""} · ${info.raw || msg}`,
       );
-      const errChunk = JSON.stringify({
-        id: `qoder-error-${Date.now()}`,
-        object: "chat.completion.chunk",
-        created: Math.floor(Date.now() / 1000),
-        model,
-        choices: [{ index: 0, delta: { content: `\n[qoder error ${statusVal}: ${truncate(msg, 200)}]` }, finish_reason: "stop" }],
-      });
-      controller.enqueue(encoder.encode(`data: ${errChunk}\n\n`));
+      // In-band failure means headers are already on the wire, so the only honest
+      // signal left is a real error frame: emitting assistant text with
+      // finish_reason=stop would make Codex record a successful turn (and retry with
+      // a poisoned history).
+      const inbandCode = resolveCodexErrorCode({ status: statusVal, message: msg, fallbackCode: "upstream_error" });
+      const inbandMessage = inbandCode === "rate_limit_exceeded"
+        ? withRetryAfterHint(truncate(msg, 400), 30000)
+        : truncate(msg, 1600);
+      const errFrame = JSON.stringify({ error: { message: inbandMessage, type: "server_error", code: inbandCode } });
+      controller.enqueue(encoder.encode(`data: ${errFrame}\n\n`));
       controller.enqueue(encoder.encode(SSE_DONE));
       doneEmitted = true;
       return;

@@ -96,7 +96,7 @@ describe("Qoder upstream error envelopes", () => {
     );
     expect(inspected.response.status).toBe(400);
     const payload = await inspected.response.json();
-    expect(payload.error.code).toBe("provider_error");
+    expect(payload.error.code).toBe("invalid_prompt");
     expect(payload.error.message).toContain("must be followed by tool messages");
   });
 
@@ -157,7 +157,9 @@ describe("Qoder upstream error envelopes", () => {
     );
     const text = await wrapped.text();
     expect(text).toContain("partial");
-    expect(text).toContain("qoder error 400");
+    // In-band failures must surface as a real error frame, never as assistant text.
+    expect(text).toContain('"code":"context_length_exceeded"');
+    expect(text).not.toContain("[qoder error");
     expect(text).toContain("[DONE]");
     const line = warn.mock.calls.map((c) => c.join(" ")).join("\n");
     expect(line).toContain("mid-stream envelope error 400");
