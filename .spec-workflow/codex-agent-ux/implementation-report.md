@@ -97,3 +97,14 @@ C. 冻结当前 70 为基线，CI 仅跑受影响子集（覆盖最窄）。
 - 测试：`tests/unit/codex-timeout-policy.test.js` 7/7（策略三态、延迟阶梯、不降档、`previous_response_id` 三种输入）
 - 实施记录：政策函数重写时漏掉 `extended` 声明与残留一行 `}, extended };`，均由测试/加载即刻暴露并修复
 - 基线门禁：`70/70 → OK`
+## 工单 09（可观测）— 切片 1/2：日志侧完成
+
+- 统一 `[CODEX]` 稳定前缀，便于 grep 与容器日志检索：
+  - `[CODEX] admission_reject reason=… est=… limit=…`（主动准入拒绝）
+  - `[CODEX] context_peak est=… limit=… window=…`（放行但已超阈值 70%）
+  - `[CODEX] timeout_policy=account-then-budget|budget-only|off`（每请求一次）
+  - `[CODEX] stream_done reasoning_events=N continuations=N`（流收尾，含续跑次数）
+- 测试：`tests/unit/codex-observability.test.js` 1/1（断言前缀与 reasoning_events 计数）
+- 门禁：`70/70 → OK`
+- **待办（切片 2/2）**：把 `reasoningEvents / compactionTriggers / contextPeakEstimate / admissionRejectReason` 落进 `requestDetails` 并在请求详情面板展示；与工单 02 切片 3（Dashboard「Codex 适配」设置分组）合并为同一批前端改动
+- 实施记录：一次索引定位插入误落到 keepalive 函数内（会导致每个 keepalive 都打日志），已回退并改用正向定位，验证仅 1 处、语义正确

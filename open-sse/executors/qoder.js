@@ -108,6 +108,7 @@ export function resolveTimeoutPolicy(settings = {}) {
     },
   };
 }
+const CODE_LOG = "[CODEX]"; // stable prefix: grep-able Codex-observability signal
 const CONTINUE_NUDGE =
   "Continue now: execute the step you just announced with a tool call in this turn. Do not restate the intent.";
 
@@ -807,7 +808,7 @@ async function resolveTimeoutPolicyForRequest({ log } = {}) {
     const { getCodexCompatSettings } = await import("@/shared/services/codexCompat.js");
     const settings = await getCodexCompatSettings();
     const policy = resolveTimeoutPolicy(settings);
-    log?.info?.("QODER", `first-token timeout policy: ${policy.strategy}`);
+    log?.info?.(CODE_LOG, `timeout_policy=${policy.strategy}`);
     return policy;
   } catch {
     return resolveTimeoutPolicy({});
@@ -960,7 +961,11 @@ function wrapQoderSSE(response, model, opts = {}) {
   let turnText = "";
   let continuationsUsed = 0;
 
+  let reasoningDeltas = 0;
   const trackChunk = (chunk) => {
+    if (typeof chunk?.choices?.[0]?.delta?.reasoning_content === "string" && chunk.choices[0].delta.reasoning_content) {
+      reasoningDeltas += 1;
+    }
     const choice = chunk?.choices?.[0];
     if (!choice) return;
     if (Array.isArray(choice.delta?.tool_calls) && choice.delta.tool_calls.length > 0) {
@@ -1124,6 +1129,7 @@ function wrapQoderSSE(response, model, opts = {}) {
           ended = await pump(nextStream.body.getReader(), kind);
           flushBuffer(kind);
         }
+        log?.info?.(CODE_LOG, `stream_done reasoning_events=${reasoningDeltas} continuations=${continuationsUsed}`);
         if (!doneEmitted) {
           controller.enqueue(encoder.encode(SSE_DONE));
           doneEmitted = true;
@@ -1237,10 +1243,13 @@ export class QoderExecutor extends BaseExecutor {
         autoCompactLimit: computeAutoCompactLimit(contextWindow, codexCompat),
         recentRejections: recentContextRejections(rejectionKey),
       });
+      if (admission.allowed && admission.limit && admission.estimatedTokens > admission.limit * 0.7) {
+        log?.info?.(CODE_LOG, `context_peak est=${admission.estimatedTokens} limit=${admission.limit} window=${contextWindow ?? "?"}`);
+      }
       if (!admission.allowed) {
         noteContextRejection(rejectionKey);
         const message = `qoder/${qoderKey}: maximum context length exceeded (estimated ${admission.estimatedTokens} tokens, limit ${admission.limit}). Please reduce the length of your messages, then retry.`;
-        log?.warn?.("QODER", `context admission rejected before upstream (est ${admission.estimatedTokens} > ${admission.limit})`);
+        log?.warn?.(CODE_LOG, `admission_reject reason=${admission.reason} est=${admission.estimatedTokens} limit=${admission.limit}`);
         return {
           response: new Response(
             JSON.stringify(buildErrorBody(400, message, { code: "context_length_exceeded" })),
