@@ -30,6 +30,12 @@ RUST_LOG=codex_models_manager=warn codex exec --json "hello" 2>&1 >/dev/null | g
 
 ## Switch production
 
+Turnkey path (captures the running container's environment, auto-rolls back when health fails):
+
+```bash
+sudo ./scripts/ops/switch-to-codex-ux.sh
+```
+
 ```bash
 docker stop 9router && docker rm 9router
 docker run -d --name 9router --restart unless-stopped -p 20128:20128 \
