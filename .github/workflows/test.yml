@@ -26,9 +26,11 @@ jobs:
         run: npm install --global npm@10 --no-audit --no-fund
 
       - name: Install app dependencies
-        # optionalDependencies (better-sqlite3) are the other trigger; the runtime
-        # falls back to sql.js, so CI skips them.
-        run: npm install --no-audit --no-fund --omit=optional
+        # `npm install` resolves this dependency set through an arborist code path that
+        # throws 'Cannot read properties of null (reading edgesOut)' on the runner, so CI
+        # installs strictly from the committed lockfile instead.
+        # optionalDependencies (better-sqlite3) are skipped: the runtime falls back to sql.js.
+        run: npm ci --no-audit --no-fund --omit=optional
 
       # vitest is a root devDependency: `npm --prefix tests install` and a second
       # `--no-save` install both hit npm's 'edgesOut' bug in CI, so the repo keeps a
