@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getSettings, updateSettings } from "@/lib/localDb";
 import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
 import { configureModelIdleAlert, maskModelIdleAlertSettings } from "@/shared/services/modelIdleAlert";
+import { normalizeCodexCompatSettings } from "@/shared/services/codexCompat";
 import { resetComboRotation } from "open-sse/services/combo.js";
 import bcrypt from "bcryptjs";
 
@@ -92,6 +93,12 @@ export async function PATCH(request) {
         nextAlert.dingtalkSecret = current.modelIdleAlert.dingtalkSecret;
       }
       body.modelIdleAlert = nextAlert;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, "codexCompat")) {
+      // Normalise + clamp on the way in so a stale dashboard payload cannot store
+      // an out-of-range ratio or a bogus fallback strategy.
+      body.codexCompat = normalizeCodexCompatSettings(body.codexCompat);
     }
 
     const settings = await updateSettings(body);

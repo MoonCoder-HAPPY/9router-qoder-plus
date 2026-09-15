@@ -1,4 +1,5 @@
 import { getAdapter } from "../driver.js";
+import { CODEX_COMPAT_DEFAULTS, normalizeCodexCompatSettings } from "@/shared/services/codexCompat.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 
 const DEFAULT_MITM_ROUTER_BASE = "http://localhost:20128";
@@ -47,6 +48,7 @@ const DEFAULT_SETTINGS = {
   pxpipeAutoInstall: true,
   pxpipeMinChars: 25000,
   pxpipeTimeoutMs: 15000,
+  codexCompat: { ...CODEX_COMPAT_DEFAULTS }, // Codex thresholds/switches (spec: codex-agent-ux §10.1)
   modelIdleAlert: {
     enabled: false,
     idleMinutes: 5,
@@ -81,6 +83,9 @@ function mergeWithDefaults(raw) {
       }
     }
   }
+  // Persisted values may predate the current validation rules (or come from a direct
+  // repo caller), so normalise on read as well as on write.
+  merged.codexCompat = normalizeCodexCompatSettings(merged.codexCompat);
   return merged;
 }
 
@@ -97,6 +102,14 @@ export async function updateSettings(updates) {
     const row = db.get(`SELECT data FROM settings WHERE id = 1`);
     const current = row ? parseJson(row.data, {}) : {};
     next = { ...current, ...updates };
+    if (current.codexCompat || updates.codexCompat) {
+      // Deep-merge + clamp so a partial update cannot wipe the other thresholds and a
+      // rogue payload cannot persist an out-of-range ratio.
+      next.codexCompat = normalizeCodexCompatSettings({
+        ...(current.codexCompat || {}),
+        ...(updates.codexCompat || {}),
+      });
+    }
     db.run(
       `INSERT INTO settings(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`,
       [stringifyJson(next)]

@@ -66,3 +66,10 @@ C. 冻结当前 70 为基线，CI 仅跑受影响子集（覆盖最窄）。
 - `open-sse/executors/qoder.js`：envelope 错误走映射表；**流内错误改为真正的 error 帧**（`{"error":{code,message}}`），不再伪造 assistant 文本 + `finish_reason=stop`
 - 测试：新增 `tests/unit/codex-error-mapping.test.js` 7/7；`qoder.test.js`、`qoder-context-overflow.test.js` 共 77/77（门禁捕获 3 处旧契约断言并已按 Q6 决策更新）
 - 基线门禁：`70/70 → OK`
+## 工单 02 切片 2/3（设置持久化与 API）— 完成
+
+- `settingsRepo`：`DEFAULT_SETTINGS.codexCompat` 取 `CODEX_COMPAT_DEFAULTS`；**读时归一化**（历史脏值自动纠正）；`updateSettings` 对 `codexCompat` 做**深合并 + 钳制**（部分更新不会抹掉其它阈值，越界值不进库）
+- `settings/route.js`：PUT 时归一化 `codexCompat`（API 侧防御）
+- 测试：`tests/unit/codex-compat-settings.test.js` 3/3（临时 DB：默认值、持久化+钳制、不波及其它设置）；连带 `codex-compat` 5/5；门禁 `70/70 → OK`
+- 测试过程中发现并修正两处真实缺陷：仓库层未归一化（直接调用会存越界值）、浅合并导致部分更新抹掉同级阈值
+- 待办（切片 3/3）：Dashboard「Codex 适配」分组 UI + `zh-CN` 文案
