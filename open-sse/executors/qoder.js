@@ -287,6 +287,9 @@ function formatQoderErrorMessage(info, opts = {}) {
 }
 
 function buildQoderEnvelopeErrorResponse(info, opts = {}) {
+  if (info.contextOverflow && opts?.metrics) {
+    opts.metrics.compactionTriggers = (opts.metrics.compactionTriggers || 0) + 1;
+  }
   const message = truncate(formatQoderErrorMessage(info, opts), 1600);
   return new Response(
     JSON.stringify({
@@ -1003,6 +1006,9 @@ function wrapQoderSSE(response, model, opts = {}) {
       // Log the untruncated upstream detail — the client-facing chunk below is
       // deliberately short.
       const info = classifyQoderEnvelopeError(statusVal, inner);
+      if (info.contextOverflow && metrics) {
+        metrics.compactionTriggers = (metrics.compactionTriggers || 0) + 1;
+      }
       log?.warn?.(
         "QODER",
         `mid-stream envelope error ${info.envelopeStatus}${info.contextOverflow ? " (context overflow)" : ""} · ${info.raw || msg}`,
@@ -1259,7 +1265,10 @@ export class QoderExecutor extends BaseExecutor {
       if (!admission.allowed) {
         noteContextRejection(rejectionKey);
         const message = `qoder/${qoderKey}: maximum context length exceeded (estimated ${admission.estimatedTokens} tokens, limit ${admission.limit}). Please reduce the length of your messages, then retry.`;
-        if (metrics) metrics.admissionRejectReason = admission.reason;
+        if (metrics) {
+          metrics.admissionRejectReason = admission.reason;
+          metrics.compactionTriggers = (metrics.compactionTriggers || 0) + 1;
+        }
         log?.warn?.(CODE_LOG, `admission_reject reason=${admission.reason} est=${admission.estimatedTokens} limit=${admission.limit}`);
         return {
           response: new Response(
@@ -1362,7 +1371,7 @@ export class QoderExecutor extends BaseExecutor {
 
     // Context for error classification: which qoder model key the failure
     // belongs to (so the client-facing message names it) plus the logger.
-    const inspectCtx = { log, modelKey: qoderKey };
+    const inspectCtx = { log, modelKey: qoderKey, metrics };
 
     // Shared by both success paths (direct and post-queue-retry): continue a turn the
     // model announced but never executed. Empty reasoning-only assistant turns are
