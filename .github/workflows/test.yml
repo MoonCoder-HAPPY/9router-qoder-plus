@@ -23,10 +23,9 @@ jobs:
       - name: Install app dependencies
         run: npm install --no-audit --no-fund
 
-      - name: Install test dependencies
-        # `npm --prefix tests install` fails in CI with "Cannot read properties of null
-        # (reading 'edgesOut')"; installing vitest at the root keeps one dependency tree.
-        run: npm install --no-audit --no-fund --no-save vitest@^4
+      # vitest is a root devDependency: `npm --prefix tests install` and a second
+      # `--no-save` install both hit npm's 'edgesOut' bug in CI, so the repo keeps a
+      # single dependency tree.
 
       - name: Run unit tests (baseline gate, no new failures)
         run: node tests/scripts/check-baseline.mjs
