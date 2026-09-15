@@ -39,4 +39,29 @@ describe("Codex observability signals", () => {
     expect(summary).toContain("reasoning_events=2");
     expect(summary).toContain("continuations=0");
   });
+it("fills the shared metrics object the request detail is built from", async () => {
+    const metrics = {};
+    const upstream = new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(enc.encode(envelope(chunk({ reasoning_content: "r1" }))));
+          controller.enqueue(enc.encode(envelope(chunk({ content: "a" }))));
+          controller.enqueue(enc.encode(envelope(chunk({}, "stop"))));
+          controller.enqueue(enc.encode(envelope("[DONE]")));
+          controller.close();
+        },
+      }),
+      { status: 200 },
+    );
+
+    const wrapped = wrapQoderSSE(upstream, "qoder/dfmodel", { metrics });
+    const reader = wrapped.body.getReader();
+    while (true) {
+      const { done } = await reader.read();
+      if (done) break;
+    }
+
+    expect(metrics.reasoningEvents).toBe(1);
+    expect(metrics.continuations).toBeUndefined();
+  });
 });

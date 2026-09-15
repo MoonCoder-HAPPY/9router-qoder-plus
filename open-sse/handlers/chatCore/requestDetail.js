@@ -70,6 +70,9 @@ export function buildRequestDetail(base, overrides = {}) {
     request: base.request,
     providerRequest: base.providerRequest || null,
     providerResponse: base.providerResponse || null,
+    // Codex observability (ticket 09): counters filled in by the provider executor
+    // while the stream is running; absent for providers that do not report them.
+    ...(base.codex ? { codex: base.codex } : {}),
     response: base.response || {},
     pxpipe: base.pxpipe || undefined,
     status: base.status || "success",

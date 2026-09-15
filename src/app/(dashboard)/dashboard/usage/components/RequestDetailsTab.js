@@ -312,6 +312,17 @@ export default function RequestDetailsTab() {
                       <div className="flex flex-col gap-0.5">
                         <div>TTFT: <span className="font-mono">{detail.latency?.ttft || 0}ms</span></div>
                         <div>Total: <span className="font-mono">{detail.latency?.total || 0}ms</span></div>
+                        {detail.codex && (
+                          <div className="text-[11px] text-text-muted/80 pt-1">
+                            Codex: {detail.codex.reasoningEvents ?? 0} reasoning · {detail.codex.continuations ?? 0} continue
+                            {detail.codex.contextPeakEstimate
+                              ? ` · peak ${Math.round(detail.codex.contextPeakEstimate / 1000)}k`
+                              : ""}
+                            {detail.codex.admissionRejectReason
+                              ? ` · rejected: ${detail.codex.admissionRejectReason}`
+                              : ""}
+                          </div>
+                        )}
                       </div>
                     </td>
                     <td className="p-4 text-center">

@@ -481,6 +481,7 @@ function createQoderQueueRetryResponse({
   keepaliveMs = QODER_KEEPALIVE_MS,
   inspectCtx = {},
   continueFetch = null,
+  metrics = null,
   hasTools = false,
   maxContinuations = QODER_AUTO_CONTINUE_MAX,
   sleepFn = sleep,
@@ -588,7 +589,9 @@ function createQoderQueueRetryResponse({
             // behaviour as a direct one, otherwise the "announce then stop" gap only
             // shows up on the queued path.
             const wrapped = wrapQoderSSE(inspected.response, model, {
+              metrics,
               continueFetch,
+        metrics,
               hasTools,
               maxContinuations,
               log,
@@ -943,6 +946,7 @@ function wrapQoderSSE(response, model, opts = {}) {
     continueFetch = null,
     maxContinuations = QODER_AUTO_CONTINUE_MAX,
     hasTools = false,
+    metrics = null,
     log = null,
   } = opts || {};
   if (!response.ok || !response.body) return response;
@@ -965,6 +969,7 @@ function wrapQoderSSE(response, model, opts = {}) {
   const trackChunk = (chunk) => {
     if (typeof chunk?.choices?.[0]?.delta?.reasoning_content === "string" && chunk.choices[0].delta.reasoning_content) {
       reasoningDeltas += 1;
+      if (metrics) metrics.reasoningEvents = reasoningDeltas;
     }
     const choice = chunk?.choices?.[0];
     if (!choice) return;
@@ -1110,6 +1115,7 @@ function wrapQoderSSE(response, model, opts = {}) {
           looksLikeDanglingIntent(turnText)
         ) {
           continuationsUsed += 1;
+          if (metrics) metrics.continuations = continuationsUsed;
           log?.info?.(
             "QODER",
             `auto-continue ${continuationsUsed}/${maxContinuations}: turn ended (finish=${lastFinish || "eof"}) with no tool call and a dangling intent`,
@@ -1192,7 +1198,7 @@ export class QoderExecutor extends BaseExecutor {
   //   - body encoded with QoderEncodeBody before signing
   //   - COSY headers built from the *encoded* body bytes
   //   - response stream re-wrapped from {statusCodeValue, body} to OpenAI SSE
-  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
+  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, metrics = null }) {
     const url = this.buildUrl();
 
     const psd = credentials?.providerSpecificData || {};
@@ -1243,12 +1249,17 @@ export class QoderExecutor extends BaseExecutor {
         autoCompactLimit: computeAutoCompactLimit(contextWindow, codexCompat),
         recentRejections: recentContextRejections(rejectionKey),
       });
+      if (metrics && admission.limit) {
+        metrics.contextPeakEstimate = admission.estimatedTokens;
+        metrics.contextLimit = admission.limit;
+      }
       if (admission.allowed && admission.limit && admission.estimatedTokens > admission.limit * 0.7) {
         log?.info?.(CODE_LOG, `context_peak est=${admission.estimatedTokens} limit=${admission.limit} window=${contextWindow ?? "?"}`);
       }
       if (!admission.allowed) {
         noteContextRejection(rejectionKey);
         const message = `qoder/${qoderKey}: maximum context length exceeded (estimated ${admission.estimatedTokens} tokens, limit ${admission.limit}). Please reduce the length of your messages, then retry.`;
+        if (metrics) metrics.admissionRejectReason = admission.reason;
         log?.warn?.(CODE_LOG, `admission_reject reason=${admission.reason} est=${admission.estimatedTokens} limit=${admission.limit}`);
         return {
           response: new Response(
@@ -1378,7 +1389,7 @@ export class QoderExecutor extends BaseExecutor {
       const resp = await fetchRequest(req);
       const inspectedNext = await inspectQoderResponse(resp, inspectCtx);
       if (inspectedNext.queued || inspectedNext.errorInfo || !inspectedNext.response?.ok) return null;
-      return wrapQoderSSE(inspectedNext.response, `qoder/${qoderKey}`);
+      return wrapQoderSSE(inspectedNext.response, `qoder/${qoderKey}`, { metrics, log });
     };
     const autoContinueMax = await resolveAutoContinueMax();
     const timeoutPolicy = await resolveTimeoutPolicyForRequest({ log });
@@ -1407,6 +1418,7 @@ export class QoderExecutor extends BaseExecutor {
         timeoutRetryOptions: timeoutPolicy.timeoutOptions,
         inspectCtx,
         continueFetch,
+        metrics,
         hasTools: Array.isArray(body.tools) && body.tools.length > 0,
         maxContinuations: autoContinueMax,
       timeoutRetryOptions: timeoutPolicy.timeoutOptions,
@@ -1430,6 +1442,7 @@ export class QoderExecutor extends BaseExecutor {
     // the next step (no tool call), issue one hidden continuation request and
     // splice its stream into this response so the agent loop keeps running.
     const wrapped = wrapQoderSSE(response, `qoder/${qoderKey}`, {
+      metrics,
       maxContinuations: autoContinueMax,
       timeoutRetryOptions: timeoutPolicy.timeoutOptions,
       continueFetch,

@@ -119,3 +119,11 @@ C. 冻结当前 70 为基线，CI 仅跑受影响子集（覆盖最窄）。
 
 - 待办：把 `reasoningEvents / compactionTriggers / contextPeakEstimate / admissionRejectReason` 从执行器/翻译层落到 `requestDetails`，并在请求详情面板展示
 - 现状：日志侧已可用（`[CODEX] …` 四类行），但**面板与落库还没有**，工单 09 保持开启
+## 工单 09（可观测）切片 2/2 — 完成 → **工单 09 关闭**
+
+- 指标贯通：`chatCore` 每请求创建 `codexMetrics` 并在 `executor.execute({…, metrics })` 传入；`qoder` 执行器写入 `reasoningEvents / continuations / contextPeakEstimate / contextLimit / admissionRejectReason`（`wrapQoderSSE` 增量更新，断连也能保住已累计值）
+- 落库：`buildRequestDetail` 在 `base.codex` 存在时写入 `codex` 字段 → 请求详情记录自动携带（无需迁移）
+- 展示：`RequestDetailsTab` 在延迟列下方以一行灰字展示 `N reasoning · N continue · peak Nk · rejected: <reason>`
+- 测试：`codex-observability` 2/2（含"共享 metrics 对象被填充"）
+- 验证：tab 页 `eslint` 仅剩 2 处**改动前既有**的 react-hooks 报错（diff 仅 +11 行，与本次插入无关）；基线门禁 `70/70 → OK`
+- 实施记录：一次 2 空格锚点同时命中队列签名与 `wrapQoderSSE` 解构，造成 `metrics` 重复声明；已定位并删除重复项后复测
