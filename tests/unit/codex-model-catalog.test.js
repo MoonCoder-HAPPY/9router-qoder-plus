@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildCodexCatalogEntries, buildCodexModelsCache, isCodexModelsCacheFresh } from "../../src/lib/qoder/codexCatalog.js";
+import { buildCodexCatalogEntries, buildCodexModelsCache, isCodexModelsCacheFresh, mergeCodexCatalogs } from "../../src/lib/qoder/codexCatalog.js";
 
 // Fields Codex's ModelInfo deserializer requires (nullable ones must be present).
 const REQUIRED_KEYS = [
@@ -111,5 +111,25 @@ describe("Codex models cache envelope", () => {
     expect(isCodexModelsCacheFresh("2026-09-15T03:25:00Z", now)).toBe(true);
     expect(isCodexModelsCacheFresh("2026-09-15T03:20:00Z", now)).toBe(false);
     expect(isCodexModelsCacheFresh("not-a-date", now)).toBe(false);
+  });
+});
+
+describe("static catalog merge (model_catalog_json)", () => {
+  it("keeps the client's bundled models and overrides by slug", () => {
+    const bundled = [
+      { slug: "gpt-5.6-luna", display_name: "gpt-5.6-luna", context_window: 400000 },
+      { slug: "DeepSeek-Flash", display_name: "bundled duplicate", context_window: 272000 },
+    ];
+    const ours = [{ slug: "DeepSeek-Flash", display_name: "DeepSeek-Flash", context_window: 1000000 }];
+    const merged = mergeCodexCatalogs(bundled, ours);
+    expect(merged).toHaveLength(2);
+    const flash = merged.find((m) => m.slug === "DeepSeek-Flash");
+    expect(flash.context_window).toBe(1000000); // router metadata wins
+    expect(merged.find((m) => m.slug === "gpt-5.6-luna")).toBeTruthy(); // client internals preserved
+  });
+
+  it("tolerates missing or malformed inputs", () => {
+    expect(mergeCodexCatalogs(null, null)).toEqual([]);
+    expect(mergeCodexCatalogs([{ display_name: "no slug" }], [{ slug: "x" }])).toHaveLength(1);
   });
 });

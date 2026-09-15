@@ -16,8 +16,11 @@
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { mergeCodexCatalogs } from "../src/lib/qoder/codexCatalog.js";
 import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 1) {
@@ -27,6 +30,8 @@ for (let i = 2; i < process.argv.length; i += 1) {
 
 const base = (args.get("base") || process.env.NINER_BASE || "http://127.0.0.1:20128").replace(/\/$/, "");
 const apiKey = args.get("key") || process.env.NINER_KEY || "";
+const catalogOut = args.get("catalog-out") ? resolve(args.get("catalog-out").replace(/^~(?=\/)/, homedir())) : null;
+const mergeBundled = args.has("merge-bundled");
 const out = resolve((args.get("out") || `${homedir()}/.codex/models_cache.json`).replace(/^~(?=\/)/, homedir()));
 if (!apiKey) {
   console.error("missing --key (or NINER_KEY)");
@@ -66,6 +71,37 @@ if (missingTemplate.length > 0) {
   process.exit(1);
 }
 
+/**
+ * Read the client's bundled catalog (`codex debug models`) from a throwaway
+ * CODEX_HOME so a `model_catalog_json` override in the real config cannot leak in.
+ */
+const readBundledCatalog = () => {
+  const home = mkdtempSync(`${tmpdir()}/codex-bundled-`);
+  try {
+    writeFileSync(`${home}/config.toml`, 'approval_policy = "never"\n');
+    const raw = execFileSync("codex", ["debug", "models"], {
+      encoding: "utf8",
+      env: { ...process.env, CODEX_HOME: home },
+    });
+    return JSON.parse(raw)?.models ?? [];
+  } catch (error) {
+    console.error(`could not read the bundled catalog (pass --no-merge-bundled to skip): ${error.message}`);
+    process.exit(2);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+};
+
+if (catalogOut) {
+  const ours = models;
+  const bundled = mergeBundled ? readBundledCatalog() : [];
+  const merged = mergeCodexCatalogs(bundled, ours);
+  mkdirSync(dirname(catalogOut), { recursive: true });
+  writeFileSync(catalogOut, `${JSON.stringify({ models: merged }, null, 2)}\n`);
+  console.log(`wrote ${merged.length} models (${bundled.length} bundled + ${ours.length} router) to ${catalogOut}`);
+  console.log(`add to config.toml:  model_catalog_json = "${catalogOut}"`);
+  process.exit(0);
+}
 const cache = {
   fetched_at: new Date().toISOString(),
   client_version: detectClientVersion(),

@@ -154,3 +154,22 @@ export function isCodexModelsCacheFresh(fetchedAt, now = Date.now()) {
   if (!Number.isFinite(ts)) return false;
   return now - ts < CODEX_MODELS_CACHE_TTL_MS;
 }
+/**
+ * Merge two catalogs, overriding by slug.
+ *
+ * `codex debug models` prints the catalog the client would use. Running it with a
+ * config that has no `model_catalog_json` yields the *bundled* catalog (the OpenAI
+ * models Codex itself relies on); merging our Qoder entries on top produces a
+ * static catalog that is a superset — which is what `model_catalog_json` needs,
+ * because that key replaces the bundled catalog rather than extending it.
+ */
+export function mergeCodexCatalogs(baseModels, overrideModels) {
+  const merged = new Map();
+  for (const model of Array.isArray(baseModels) ? baseModels : []) {
+    if (model?.slug) merged.set(model.slug, model);
+  }
+  for (const model of Array.isArray(overrideModels) ? overrideModels : []) {
+    if (model?.slug) merged.set(model.slug, model);
+  }
+  return [...merged.values()];
+}

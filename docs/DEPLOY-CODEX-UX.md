@@ -70,3 +70,17 @@ Codex does **not** call `/v1/models` for a custom provider: it reads
 client version. Run `scripts/codex-models-cache.mjs` before starting Codex (shell alias,
 wrapper script or a cron entry) so the client keeps the real context window, compaction
 threshold and reasoning capabilities.
+## 客户端接入：静态目录（推荐，替代 300 秒缓存）
+
+```bash
+# 生成一份包含「客户端自带模型 + 9router 模型」的静态目录
+node scripts/codex-models-cache.mjs --base http://<router>:20128 --key <api-key> \
+  --catalog-out ~/.codex/models_catalog.json --merge-bundled
+```
+```toml
+# config.toml
+model_catalog_json = "/home/<you>/.codex/models_catalog.json"
+```
+
+实测（CLI 0.154.0）：两次运行均 `rc=0`、`fallback warnings=0`（含合并进来的 gpt-5.x 辅助模型）、`reasoning items=1`；
+而仅用 `~/.codex/models_cache.json` 时缓存 300 秒后即过期，需要重复生成。静态目录是"一次安装、永久生效"的形态。

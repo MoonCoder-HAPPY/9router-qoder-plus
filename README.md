@@ -246,7 +246,22 @@ _钉钉告警设置支持空闲阈值、告警冷却、Webhook、加签 Secret �
 
 Codex 对**自定义 provider 不会请求 `/v1/models`**，它读取本地缓存 `~/.codex/models_cache.json`：该缓存**只有 300 秒有效期**，且必须与客户端版本匹配、每个模型都必须带指令模板。缓存不存在或过期时，Codex 会退回内置的 272k 兜底元数据 —— 表现就是**长会话压缩过晚（撞上下文）**、**思考过程不展示**。
 
-一次性/定期刷新缓存：
+**推荐做法（一次安装、永久生效）：把模型目录"内置"进客户端**——生成一份静态目录文件，再用一行配置指向它。它没有 300 秒过期问题，也不需要运行时常驻脚本：
+
+```bash
+node scripts/codex-models-cache.mjs --base http://<9router>:20128 --key <API_KEY> \
+  --catalog-out ~/.codex/models_catalog.json --merge-bundled
+# --merge-bundled 会调用 `codex debug models` 取回客户端自带的目录并合并，
+# 这样不会丢掉 Codex 自身依赖的辅助模型（否则会出现 gpt-5.x 之类的 fallback 警告）
+```
+
+```toml
+model_catalog_json = "/home/<you>/.codex/models_catalog.json"
+```
+
+模型有增减或 Codex 升级后，重新跑一次上面的命令即可（静态文件不会自动过期）。
+
+**备选做法（动态缓存，300 秒过期）**：
 
 ```bash
 node scripts/codex-models-cache.mjs --base http://<9router>:20128 --key <API_KEY>
