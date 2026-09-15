@@ -15,6 +15,7 @@ import { trackPendingRequest, appendRequestLog, saveRequestDetail } from "@/lib/
 import { getExecutor } from "../executors/index.js";
 import { supportsGrokCliReasoningEffort } from "../config/grokCli.js";
 import { buildRequestDetail, extractRequestConfig } from "./chatCore/requestDetail.js";
+import { unsupportedPreviousResponseIdError } from "../utils/unsupportedFeatures.js";
 import { handleForcedSSEToJson } from "./chatCore/sseToJsonHandler.js";
 import { handleNonStreamingResponse } from "./chatCore/nonStreamingHandler.js";
 import { handleStreamingResponse, buildOnStreamComplete } from "./chatCore/streamingHandler.js";
@@ -120,6 +121,13 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   // Expose raw client headers to translators/executors for session-id resolution
   if (credentials) credentials.rawHeaders = clientRawRequest?.headers || {};
+
+  // Reject resumption requests we cannot honour instead of silently ignoring the id.
+  const unsupportedResume = unsupportedPreviousResponseIdError(body, provider);
+  if (unsupportedResume) {
+    log?.warn?.("REQUEST", `unsupported previous_response_id for ${provider}`);
+    return createErrorResult(unsupportedResume.status, unsupportedResume.message);
+  }
 
   // Auto-strip media blocks the model can't read (vision/audio/pdf) before translation.
   if (!passthrough) {

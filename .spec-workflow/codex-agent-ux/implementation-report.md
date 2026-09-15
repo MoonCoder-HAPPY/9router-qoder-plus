@@ -88,3 +88,12 @@ C. 冻结当前 70 为基线，CI 仅跑受影响子集（覆盖最窄）。
 - 测试：新增 `tests/unit/codex-auto-continue.test.js` 5/5（预算=0 不续跑、预算=1 续跑一次并产出工具调用、无 tools 不触发、**队列重试后同样续跑**、未接线时保持旧行为）；连带 `qoder-auto-continue` 11/11
 - 实施记录：一次补丁把 `wrapQoderSSE(response, \`qoder/${qoderKey}\`,…)` 的模板串误伤，已在提交前发现并修复
 - 基线门禁：`70/70 → OK`
+## 工单 08（504 兜底 + 兼容收口）— 完成
+
+- `resolveTimeoutPolicy(settings)`（`qoder.js` 导出）：`account-then-budget`（默认，1 次快速重试后转入延长预算，共 4 次尝试）/ `budget-only`（跳过快速重试，单次等待更长）/ `off`（保持原 env 阶梯）
+- 重试循环支持 `delayFor(attempt)` 钩子；`execute()` 每请求读取 `codexCompat` 策略并同时传给直连与队列两条路径；策略名打日志
+- **不降档**：策略只改等待，不改请求模型
+- 兼容收口：新增 `open-sse/utils/unsupportedFeatures.js`；`chatCore` 在翻译前对非 OpenAI/Codex provider 显式拒绝 `previous_response_id`（400 `invalid_prompt`），不再静默忽略
+- 测试：`tests/unit/codex-timeout-policy.test.js` 7/7（策略三态、延迟阶梯、不降档、`previous_response_id` 三种输入）
+- 实施记录：政策函数重写时漏掉 `extended` 声明与残留一行 `}, extended };`，均由测试/加载即刻暴露并修复
+- 基线门禁：`70/70 → OK`

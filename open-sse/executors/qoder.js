@@ -63,6 +63,51 @@ const QUEUE_RETRY = {
   maxDelayMs: Number(process.env.QODER_QUEUE_MAX_DELAY_MS) || 60000,
 };
 const QODER_KEEPALIVE_MS = Number(process.env.QODER_KEEPALIVE_MS) || 10000;
+
+// First-token 504 policy (spec §16.6 / codexCompat.firstTokenTimeoutFallback):
+//   account-then-budget  one quick in-account retry, then a single extended-budget
+//                        attempt; if that fails too the error is surfaced so the
+//                        pipeline can rotate the account (no silent downgrade)
+//   budget-only          no quick retries, go straight to the extended budget
+//   off                  keep the legacy env-driven retry ladder
+const TIMEOUT_BUDGET_MULTIPLIER = (() => {
+  const raw = Number(process.env.QODER_TIMEOUT_BUDGET_MULTIPLIER);
+  return Number.isFinite(raw) && raw > 1 ? raw : 2;
+})();
+
+export function resolveTimeoutPolicy(settings = {}) {
+  const strategy = settings?.firstTokenTimeoutFallback || "account-then-budget";
+  const extended = {
+    maxAttempts: TIMEOUT_RETRY.maxAttempts,
+    baseDelayMs: Math.round(TIMEOUT_RETRY.baseDelayMs * TIMEOUT_BUDGET_MULTIPLIER),
+    maxDelayMs: Math.round(TIMEOUT_RETRY.maxDelayMs * TIMEOUT_BUDGET_MULTIPLIER),
+  };
+  const quickDelay = (attempt) => Math.min(TIMEOUT_RETRY.baseDelayMs * attempt, TIMEOUT_RETRY.maxDelayMs);
+  const extendedDelay = (attempt) =>
+    Math.min(extended.baseDelayMs * attempt, extended.maxDelayMs);
+
+  if (strategy === "off") {
+    return { strategy: "off", timeoutOptions: { ...TIMEOUT_RETRY } };
+  }
+  if (strategy === "budget-only") {
+    return {
+      strategy: "budget-only",
+      timeoutOptions: { ...extended, delayFor: extendedDelay },
+    };
+  }
+  // account-then-budget (default): exactly one quick retry on the same account, then
+  // the extended budget. If even that fails the caller surfaces the mapped error and
+  // the pipeline rotates to another account (no silent model downgrade).
+  return {
+    strategy: "account-then-budget",
+    timeoutOptions: {
+      maxAttempts: 1 + extended.maxAttempts,
+      baseDelayMs: TIMEOUT_RETRY.baseDelayMs,
+      maxDelayMs: extended.maxDelayMs,
+      delayFor: (attempt) => (attempt <= 1 ? quickDelay(attempt) : extendedDelay(attempt - 1)),
+    },
+  };
+}
 const CONTINUE_NUDGE =
   "Continue now: execute the step you just announced with a tool call in this turn. Do not restate the intent.";
 
@@ -499,10 +544,9 @@ function createQoderQueueRetryResponse({
             if (isTimeout) timeoutAttempts++;
             else attempt++;
             const current = isTimeout ? timeoutAttempts : attempt;
-            const delay = Math.min(
-              budget.baseDelayMs * current,
-              budget.maxDelayMs,
-            );
+            const delay = typeof budget.delayFor === "function"
+              ? budget.delayFor(current)
+              : Math.min(budget.baseDelayMs * current, budget.maxDelayMs);
             log?.info?.(
               "QODER",
               `${queueInfo.reason || "queued"} via ${queueInfo.source || "stream"} (position ${queueInfo.queueCount ?? "?"}), retry ${current}/${budget.maxAttempts} in ${Math.round(delay / 1000)}s`,
@@ -758,6 +802,18 @@ export function looksLikeDanglingIntent(text) {
 
 // Continuation budget: settings first (dashboard editable), env var wins when set
 // explicitly so an operator can still disable it during an incident.
+async function resolveTimeoutPolicyForRequest({ log } = {}) {
+  try {
+    const { getCodexCompatSettings } = await import("@/shared/services/codexCompat.js");
+    const settings = await getCodexCompatSettings();
+    const policy = resolveTimeoutPolicy(settings);
+    log?.info?.("QODER", `first-token timeout policy: ${policy.strategy}`);
+    return policy;
+  } catch {
+    return resolveTimeoutPolicy({});
+  }
+}
+
 async function resolveAutoContinueMax() {
   const envRaw = Number(process.env.QODER_AUTO_CONTINUE_MAX);
   if (Number.isFinite(envRaw)) return Math.max(0, Math.floor(envRaw));
@@ -1316,6 +1372,7 @@ export class QoderExecutor extends BaseExecutor {
       return wrapQoderSSE(inspectedNext.response, `qoder/${qoderKey}`);
     };
     const autoContinueMax = await resolveAutoContinueMax();
+    const timeoutPolicy = await resolveTimeoutPolicyForRequest({ log });
     let response = await doFetch();
     const inspected = await inspectQoderResponse(response, inspectCtx);
 
@@ -1338,11 +1395,12 @@ export class QoderExecutor extends BaseExecutor {
         signal,
         log,
         doFetch,
-        timeoutRetryOptions: TIMEOUT_RETRY,
+        timeoutRetryOptions: timeoutPolicy.timeoutOptions,
         inspectCtx,
         continueFetch,
         hasTools: Array.isArray(body.tools) && body.tools.length > 0,
         maxContinuations: autoContinueMax,
+      timeoutRetryOptions: timeoutPolicy.timeoutOptions,
       });
       return {
         response: queued,
@@ -1364,6 +1422,7 @@ export class QoderExecutor extends BaseExecutor {
     // splice its stream into this response so the agent loop keeps running.
     const wrapped = wrapQoderSSE(response, `qoder/${qoderKey}`, {
       maxContinuations: autoContinueMax,
+      timeoutRetryOptions: timeoutPolicy.timeoutOptions,
       continueFetch,
       hasTools: Array.isArray(body.tools) && body.tools.length > 0,
       log,
