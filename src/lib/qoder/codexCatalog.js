@@ -12,7 +12,9 @@
  * account e-mails or quota data (spec.md §11).
  */
 
-import { computeAutoCompactLimit } from "@/shared/services/codexCompat.js";
+// Relative import (not the "@/" alias) so this module also runs from plain Node, which is
+// what scripts/codex-models-cache.mjs does when it generates a client catalog.
+import { computeAutoCompactLimit } from "../../shared/services/codexCompat.js";
 
 /** Tier aliases are callable but should not clutter the model picker. */
 const HIDDEN_SLUGS = new Set(["auto", "ultimate", "performance", "efficient", "lite"]);
