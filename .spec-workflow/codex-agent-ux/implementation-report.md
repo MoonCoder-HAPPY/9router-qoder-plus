@@ -217,3 +217,25 @@ sudo docker stop 9router && sudo docker rm 9router && sudo docker start 9router-
 **仍阻塞的两项**
 1. **GitHub 推送被拒**：`remote: You must verify your email address.` → 无法推送 `7a96df4`、`0ea377c`，因此 CI 无法跑绿（AC #2 待验证）；需账号持有人完成邮箱验证。
 2. **生产切换动作本身**需用户确认（Goal Mode 暂停条件）。
+## 最终验收（2026-09-15，v40 = 与提交源码逐字节一致）
+
+`open-sse/executors/qoder.js` 与 `RequestDetailsTab.js` 的 LF 归一化 SHA256 在服务器与本地**完全一致**（`3ee97b58…` / `72c98d49…`），确认镜像由提交源码构建。
+
+| 验收项 | 结果 |
+| --- | --- |
+| HTTP 三场景（codex-acceptance.mjs） | **4/4 PASS**（A 序列+id≤64 / B 工具链 call_id / C 准入 400 context_length_exceeded） |
+| 真 Codex CLI 0.154.0 | **rc=0｜fallback warnings=0｜reasoning items=1** |
+| `/v1/models` | 16 模型、16 带 `model_messages.instructions_template`、DeepSeek-Flash ctx=1000000、compact=500000 |
+| 请求详情指标 | 成功行 `reasoningEvents=49…`；准入拒绝行 `{contextPeakEstimate:504928, contextLimit:500000, admissionRejectReason:"context-window", compactionTriggers:1}` |
+| 回滚容器 | `9router-before-codex-ux-20260915`（Created，v39c） |
+| 生产 | `9router` @20128 v39c **全程未动**，健康正常 |
+
+本轮补齐的 AC 缺口：`compactionTriggers` 计数（主动准入 / 前置 envelope 溢出 / 流内溢出三条路径）——之前只记了"原因"，没记"次数"。
+
+## 未推送提交（GitHub 邮箱验证阻塞）
+
+`7a96df4`（CI 输出透出）、`0ea377c`（指标落库修复）、`a81ac05`（UI 面测试+runbook）、`7f842b6`+`4d4069a`（compactionTriggers）。推送报错：`remote: You must verify your email address.`
+
+## 切换命令
+
+见 `docs/DEPLOY-CODEX-UX.md`（已随 `7f842b6` 提交）：切换 = `docker stop/rm 9router` → 起 `9router:qoder-plus-codex-ux-v40`（同 env/挂载）→ 健康检查；回滚 = 一条 `docker start 9router-before-codex-ux-20260915`。
