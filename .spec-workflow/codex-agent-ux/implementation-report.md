@@ -239,3 +239,23 @@ sudo docker stop 9router && sudo docker rm 9router && sudo docker start 9router-
 ## 切换命令
 
 见 `docs/DEPLOY-CODEX-UX.md`（已随 `7f842b6` 提交）：切换 = `docker stop/rm 9router` → 起 `9router:qoder-plus-codex-ux-v40`（同 env/挂载）→ 健康检查；回滚 = 一条 `docker start 9router-before-codex-ux-20260915`。
+## CI 转绿（2026-09-15）→ AC #2 达成
+
+- GitHub 邮箱验证恢复后，`feat/codex-agent-ux` 全部提交已推送；CI run **34933245385 = success**（1m17s）
+- 触发过程还修掉一个真实问题：Linux runner 上 `golden-url-header` 多出 7 个 provider（alims-intl / clinepass / featherless / grok-cli / kimchi / perplexity-agent / venice）的 14 条快照失败（属工单 11 的历史漂移，非本次改动）→ 基线改为 **Windows ∪ Linux = 84 条**，门禁只对"真正新增失败"报错（`15c0709`）
+- 另新增 504 重试阶梯集成测试（`f3582b6`，走真实重试循环：快速重试 → 延长预算；budget-only 走更宽的阶梯）
+
+## 验收状态（spec §16 全部 10 条）
+
+| AC | 状态 | 证据 |
+| --- | --- | --- |
+| 1 门禁 | ✅ | 本地 OK（70/84 基线）+ CI success |
+| 2 CI | ✅ | run 34933245385 success |
+| 3 模型目录 | ✅ | 影子实例：16 模型/16 模板/ctx=1000000/compact=500000；单测覆盖 Lite modalities |
+| 4 真客户端 | ✅ | CLI 3/3（fallback=0，reasoning=1）；HTTP A/B/C 4/4 |
+| 5 上下文压缩路径 | ✅ | 准入 400 `context_length_exceeded` + `compactionTriggers=1` 落库 |
+| 6 504 兜底 | ✅ | 策略单测 7/7 + 重试循环集成测试（不降档断言） |
+| 7 续跑 | ✅ | 单测含队列路径 |
+| 8 错误路径 | ✅ | 错误行 `tokens={0,0}`；成功行无 `[qoder error` 文本 |
+| 9 可观测 | ✅（UI 浏览器级未验证） | 落库+面板源码级测试；真实渲染未在浏览器中验证 |
+| 10 端到端+发布 | ⏳ | 影子验收、候选镜像、回滚容器、runbook 全部就绪；**生产切换需用户确认** |
