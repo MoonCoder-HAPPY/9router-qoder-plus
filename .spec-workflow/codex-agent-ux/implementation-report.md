@@ -259,3 +259,17 @@ sudo docker stop 9router && sudo docker rm 9router && sudo docker start 9router-
 | 8 错误路径 | ✅ | 错误行 `tokens={0,0}`；成功行无 `[qoder error` 文本 |
 | 9 可观测 | ✅（UI 浏览器级未验证） | 落库+面板源码级测试；真实渲染未在浏览器中验证 |
 | 10 端到端+发布 | ⏳ | 影子验收、候选镜像、回滚容器、runbook 全部就绪；**生产切换需用户确认** |
+## 切换就绪硬化（2026-09-15，最后一轮）
+
+发现并修复两处**只在切换瞬间才会暴露**的缺陷：
+
+1. **回滚容器环境不完整**：原回滚容器缺 `INITIAL_PASSWORD`（21 vs 生产 22 个变量）→ 已用生产容器 env 的原样副本重建，`diff` 键集合 **IDENTICAL**；
+2. **切换脚本的 `-e ""` 缺陷**：`mapfile` 捕获到末尾空行会产生空 `-e`，docker 直接报错（在切换那一步失败）→ 已加 `sed '/^$/d'`，并同步修正服务器与仓库两份脚本。
+
+**两条路径都做了实机演练**（使用一次性容器与独立端口，全程未触生产）：
+- 成功路径：捕获 env → 停旧 → 起候选 → 健康检查通过（`{"ok":true}`）
+- 失败路径：新容器不健康 → **自动回滚** → 回滚容器恢复服务并打印 `rolled back, production healthy again`
+
+**完整性证明**：分支内 19 个生产文件在「本地提交」与「构建候选镜像的服务器源码」之间 **逐个 SHA256 一致**（LF 归一化），排除"镜像里不是提交代码"的风险。
+
+**最终就绪状态**（生产未动）：生产 `9router` v39c running/0 重启/健康；回滚容器 `9router-before-codex-ux-20260915` created/env=22/v39c；候选 `9router:qoder-plus-codex-ux-v40`；影子实例 20131 healthy；CI run `34933900304` success；切换与回滚脚本 `~/switch-to-codex-ux.sh`、`~/rollback-codex-ux.sh`（`bash -n` 通过，仓库内副本见 `scripts/ops/`）。
