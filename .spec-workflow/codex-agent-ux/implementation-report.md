@@ -151,3 +151,20 @@ C. 冻结当前 70 为基线，CI 仅跑受影响子集（覆盖最窄）。
 2. 若客户端对自定义 provider 不拉取目录：改用 **客户端配置兜底**（`model_context_window` / `model_auto_compact_token_limit` / `model_reasoning_summary` 写进 config.toml 或 README 配方），并在服务端保持 `models[]` 供支持该行为的客户端使用。
 3. reasoning item 缺失需在同一轮 debug 中一并定位（事件是否送达 / Codex 是否只接受 summary 且要求 `item/started`）。
 4. 上述 1–3 有结论前，**不做灰度、不切生产**。
+## 根因定位（2026-09-15，debug 复跑，证据确凿）
+
+`RUST_LOG=codex_models_manager=debug` 下真 CLI（0.154.0）的输出：
+
+```
+list_models{refresh_strategy=online_if_uncached}: models cache: no usable cache entry
+WARN get_model_info{model="DeepSeek-Flash"}: Unknown model DeepSeek-Flash is used.
+     This will use fallback model metadata.
+```
+
+**结论：Codex 根本没有向我们发起 `GET /v1/models`**（测试实例日志里 0 次目录请求、`models_cache.json` 未生成）。它的目录来源是**本地文件缓存** `/root/.codex/models_cache.json`，缓存不存在即"no usable cache entry"→ 直接落兜底元数据。
+
+因此工单 03 的服务端 `models[]` 是"必要但不充分"：客户端不拉就白给。真正的修复路径有两条：
+1. **客户端配置兜底（立即生效）**：在 `config.toml` 显式声明 `model_context_window` / `model_auto_compact_token_limit` / `model_reasoning_summary`；
+2. **喂缓存**：向 `models_cache.json` 写入符合 Codex 结构的目录（可用我们 `/v1/models` 的 `models[]` 作为数据源），让客户端"读到"真实窗口与阈值。
+
+未完成：reasoning item 在真客户端为 0（需 `codex_core=debug` 复跑确认事件是否被 core 接收）；上述任一条都未在真客户端验证通过前，**不灰度、不切生产**。
