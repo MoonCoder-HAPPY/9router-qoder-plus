@@ -183,3 +183,37 @@ WARN get_model_info{model="DeepSeek-Flash"}: Unknown model DeepSeek-Flash is use
 
 已修三处真实问题：① workflow 里未加引号的 `baseline gate: no new failures` 让整个 YAML 非法（GitHub 直接 0s 失败）；② CI 里 `npm --prefix tests install` / 二次 `--no-save` 安装触发 npm 的 `edgesOut` 崩溃 → 改为 vitest 作为根 devDependency + 单次 `npm ci`；③ 门禁脚本吞掉了 vitest 的输出且未检查报告文件缺失 → 现在会打印 vitest 输出并以非零码退出。
 **剩余阻塞**：GitHub 拒绝推送 —— `remote: You must verify your email address.`（`gh auth status` 正常，是账号级邮件验证要求）。因此 `7a96df4` 之后的提交无法推送，CI 也无法跑绿；该验证只能由账号持有人完成。
+## 生产切换就绪状态（2026-09-15）
+
+**候选与回滚已备好（生产未动）**
+- 候选镜像：`9router:qoder-plus-codex-ux-v40`（由修复后的源码构建，1.73GB）
+- 回滚容器：`9router-before-codex-ux-20260915`（Created，v39c + 生产挂载/env，可秒起）
+- 旁路实例：`9router-agentux-test` @127.0.0.1:20131（数据目录副本，跑的就是候选镜像）
+- 生产：`9router` @20128 仍为 v39c，健康检查正常
+
+**候选镜像上的验收证据**
+| 项 | 结果 |
+| --- | --- |
+| 真 Codex CLI（0.154.0），3 连跑 | 每次 `rc=0`、`fallback warnings=0`、`reasoning items=1` |
+| HTTP 三场景（scripts/codex-acceptance.mjs） | 4/4 PASS（A 事件序列与 id≤64 / B 工具链 / C 准入拒绝） |
+| `/v1/models` | 16 模型、16 带模板、DeepSeek-Flash ctx=1000000、compact=500000 |
+| 请求详情指标 | 成功行 `{contextPeakEstimate,contextLimit,reasoningEvents}`；拒绝行带 `admissionRejectReason` |
+| 数据兼容 | 无 schema/migration 改动（仅 settings JSON 新键 + requestDetails 新字段），回滚 v39c 可直接复用同一 data 目录 |
+
+**切换命令（待用户确认后执行）**
+```bash
+sudo docker stop 9router && sudo docker rm 9router
+sudo docker run -d --name 9router --restart unless-stopped -p 20128:20128 \
+  -v /home/ubuntu/.9router:/app/data -e DATA_DIR=/app/data -e HOSTNAME=0.0.0.0 -e PORT=20128 \
+  -e NODE_ENV=production -e REQUIRE_API_KEY=true -e TZ=Asia/Shanghai -e "$JWT_SECRET_ENV" \
+  9router:qoder-plus-codex-ux-v40
+curl -fsS http://127.0.0.1:20128/api/health
+```
+**回滚命令**
+```bash
+sudo docker stop 9router && sudo docker rm 9router && sudo docker start 9router-before-codex-ux-20260915
+```
+
+**仍阻塞的两项**
+1. **GitHub 推送被拒**：`remote: You must verify your email address.` → 无法推送 `7a96df4`、`0ea377c`，因此 CI 无法跑绿（AC #2 待验证）；需账号持有人完成邮箱验证。
+2. **生产切换动作本身**需用户确认（Goal Mode 暂停条件）。
