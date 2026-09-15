@@ -168,3 +168,18 @@ WARN get_model_info{model="DeepSeek-Flash"}: Unknown model DeepSeek-Flash is use
 2. **喂缓存**：向 `models_cache.json` 写入符合 Codex 结构的目录（可用我们 `/v1/models` 的 `models[]` 作为数据源），让客户端"读到"真实窗口与阈值。
 
 未完成：reasoning item 在真客户端为 0（需 `codex_core=debug` 复跑确认事件是否被 core 接收）；上述任一条都未在真客户端验证通过前，**不灰度、不切生产**。
+## 阻塞项修复记录（2026-09-15，目标模式续跑）
+
+### B1: 请求详情丢失 Codex 指标（AC #9）— 已修复并验证
+
+根因：`src/lib/db/repos/requestDetailsRepo.js` 的 `flushToDatabase()` 用**显式字段清单**构造 `record`，未知键被丢弃 → `codex` 永远落不了库（不是采集问题：日志 `diag detail_codex_keys=3` 证明回调里已有 3 个键）。
+修复：`record` 增加 `codex: item.codex || undefined,`；同时给 `chatCore` **两条错误路径**的详情补上 codex 块（准入拒绝等场景才有 `admissionRejectReason`）。
+验证（旁路实例 20131，修复后重建）：
+- 正常请求行：`codex={"contextPeakEstimate":41,"contextLimit":500000,"reasoningEvents":44}`
+- 准入拒绝行：`status=error`，`codex={"contextPeakEstimate":504928,"contextLimit":500000,"admissionRejectReason":"context-window"}`
+- 新增回归测试 `tests/unit/request-detail-codex-persist.test.js`（走真实缓冲写路径，1/1 通过）
+
+### B2: CI 全红（AC #2）— 部分修复，**仍被外部状态阻塞**
+
+已修三处真实问题：① workflow 里未加引号的 `baseline gate: no new failures` 让整个 YAML 非法（GitHub 直接 0s 失败）；② CI 里 `npm --prefix tests install` / 二次 `--no-save` 安装触发 npm 的 `edgesOut` 崩溃 → 改为 vitest 作为根 devDependency + 单次 `npm ci`；③ 门禁脚本吞掉了 vitest 的输出且未检查报告文件缺失 → 现在会打印 vitest 输出并以非零码退出。
+**剩余阻塞**：GitHub 拒绝推送 —— `remote: You must verify your email address.`（`gh auth status` 正常，是账号级邮件验证要求）。因此 `7a96df4` 之后的提交无法推送，CI 也无法跑绿；该验证只能由账号持有人完成。

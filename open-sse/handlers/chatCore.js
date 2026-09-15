@@ -330,6 +330,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       providerRequest: translatedBody || null,
       response: { error: error.message || String(error), status: error.name === "AbortError" ? 499 : 502, thinking: null },
       pxpipe: pxpipeSummary,
+      ...(Object.keys(codexMetrics).length > 0 ? { codex: { ...codexMetrics } } : {}),
       status: "error"
     })).catch(() => { });
 
@@ -383,6 +384,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       providerRequest: finalBody || translatedBody || null,
       response: { error: message, status: statusCode, thinking: null },
       pxpipe: pxpipeSummary,
+      ...(Object.keys(codexMetrics).length > 0 ? { codex: { ...codexMetrics } } : {}),
       status: "error"
     })).catch(() => { });
 

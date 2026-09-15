@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { __test__ as qoderInternals } from "../../open-sse/executors/qoder.js";
+import { buildRequestDetail } from "../../open-sse/handlers/chatCore/requestDetail.js";
 
 const { wrapQoderSSE } = qoderInternals;
 
@@ -63,5 +64,17 @@ it("fills the shared metrics object the request detail is built from", async () 
 
     expect(metrics.reasoningEvents).toBe(1);
     expect(metrics.continuations).toBeUndefined();
+  });
+});
+
+describe("request detail carries the Codex block", () => {
+  it("includes codex metrics when the executor reported them", () => {
+    const detail = buildRequestDetail({ provider: "qoder", model: "dfmodel", codex: { reasoningEvents: 23 } });
+    expect(detail.codex).toEqual({ reasoningEvents: 23 });
+  });
+
+  it("omits the key entirely when nothing was reported", () => {
+    const detail = buildRequestDetail({ provider: "qoder", model: "dfmodel" });
+    expect("codex" in detail).toBe(false);
   });
 });
