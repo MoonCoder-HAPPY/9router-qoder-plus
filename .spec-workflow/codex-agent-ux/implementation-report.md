@@ -80,3 +80,11 @@ C. 冻结当前 70 为基线，CI 仅跑受影响子集（覆盖最窄）。
 - 测试：`tests/unit/codex-proactive-guard.test.js` 4/4 —— 超限未打上游、正常放行、触顶保护、开关关闭行为不变
 - 实施中发现真实缺陷：`execute()` 未解构 `modelConfig`，守卫首版会被 catch 静默跳过（已修并复测）
 - 基线门禁：`70/70 → OK`
+## 工单 07（auto-continue 加固）— 完成
+
+- `continueFetch` 提升到 `execute()` 公共位置，**直连路径与队列重试路径共用**；`createQoderQueueRetryResponse` 新增 `continueFetch / hasTools / maxContinuations` 形参并在内部 `wrapQoderSSE` 转发
+- 续跑次数改为读 `codexCompat.autoContinueMax`（`resolveAutoContinueMax()`：显式设置 `QODER_AUTO_CONTINUE_MAX` 时环境变量优先，便于事故期一键关闭）
+- 续跑请求会剔除**空 reasoning 回合**（assistant 且内容为空且无 tool_calls），不再回放
+- 测试：新增 `tests/unit/codex-auto-continue.test.js` 5/5（预算=0 不续跑、预算=1 续跑一次并产出工具调用、无 tools 不触发、**队列重试后同样续跑**、未接线时保持旧行为）；连带 `qoder-auto-continue` 11/11
+- 实施记录：一次补丁把 `wrapQoderSSE(response, \`qoder/${qoderKey}\`,…)` 的模板串误伤，已在提交前发现并修复
+- 基线门禁：`70/70 → OK`

@@ -63,6 +63,8 @@ const QUEUE_RETRY = {
   maxDelayMs: Number(process.env.QODER_QUEUE_MAX_DELAY_MS) || 60000,
 };
 const QODER_KEEPALIVE_MS = Number(process.env.QODER_KEEPALIVE_MS) || 10000;
+const CONTINUE_NUDGE =
+  "Continue now: execute the step you just announced with a tool call in this turn. Do not restate the intent.";
 
 // Qoder's gateway answers "First Token Timeout or Upstream Timeout" (HTTP 504
 // or an SSE envelope with statusCodeValue 504) when a large context cannot
@@ -432,6 +434,9 @@ function createQoderQueueRetryResponse({
   timeoutRetryOptions = TIMEOUT_RETRY,
   keepaliveMs = QODER_KEEPALIVE_MS,
   inspectCtx = {},
+  continueFetch = null,
+  hasTools = false,
+  maxContinuations = QODER_AUTO_CONTINUE_MAX,
   sleepFn = sleep,
 }) {
   const encoder = new TextEncoder();
@@ -534,7 +539,15 @@ function createQoderQueueRetryResponse({
               return;
             }
 
-            const wrapped = wrapQoderSSE(inspected.response, model);
+            // A queued request that finally succeeds must keep the same continuation
+            // behaviour as a direct one, otherwise the "announce then stop" gap only
+            // shows up on the queued path.
+            const wrapped = wrapQoderSSE(inspected.response, model, {
+              continueFetch,
+              hasTools,
+              maxContinuations,
+              log,
+            });
             if (!wrapped.body) {
               error("upstream returned an empty stream");
               return;
@@ -743,6 +756,20 @@ export function looksLikeDanglingIntent(text) {
   return DANGLING_INTENT.test(t.slice(-120));
 }
 
+// Continuation budget: settings first (dashboard editable), env var wins when set
+// explicitly so an operator can still disable it during an incident.
+async function resolveAutoContinueMax() {
+  const envRaw = Number(process.env.QODER_AUTO_CONTINUE_MAX);
+  if (Number.isFinite(envRaw)) return Math.max(0, Math.floor(envRaw));
+  try {
+    const { getCodexCompatSettings } = await import("@/shared/services/codexCompat.js");
+    const settings = await getCodexCompatSettings();
+    const value = Number(settings?.autoContinueMax);
+    return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : QODER_AUTO_CONTINUE_MAX;
+  } catch {
+    return QODER_AUTO_CONTINUE_MAX;
+  }
+}
 function truncate(s, n) {
   return s && s.length > n ? `${s.slice(0, n)}...` : s || "";
 }
@@ -1261,6 +1288,34 @@ export class QoderExecutor extends BaseExecutor {
     // belongs to (so the client-facing message names it) plus the logger.
     const inspectCtx = { log, modelKey: qoderKey };
 
+    // Shared by both success paths (direct and post-queue-retry): continue a turn the
+    // model announced but never executed. Empty reasoning-only assistant turns are
+    // dropped so the continuation does not replay them.
+    const continueFetch = async (danglingText) => {
+      const sanitizedMessages = (Array.isArray(body.messages) ? body.messages : []).filter(
+        (message) =>
+          !(
+            message?.role === "assistant" &&
+            !message?.tool_calls?.length &&
+            !String(message?.content ?? "").trim()
+          ),
+      );
+      const nudgedBody = {
+        ...body,
+        messages: [
+          ...sanitizedMessages,
+          { role: "assistant", content: danglingText },
+          { role: "user", content: CONTINUE_NUDGE },
+        ],
+      };
+      const built = await buildQoderRequestBody({ model, body: nudgedBody, credentials, log, proxyOptions, signal });
+      const req = makeAttemptRequest(true, built.payload);
+      const resp = await fetchRequest(req);
+      const inspectedNext = await inspectQoderResponse(resp, inspectCtx);
+      if (inspectedNext.queued || inspectedNext.errorInfo || !inspectedNext.response?.ok) return null;
+      return wrapQoderSSE(inspectedNext.response, `qoder/${qoderKey}`);
+    };
+    const autoContinueMax = await resolveAutoContinueMax();
     let response = await doFetch();
     const inspected = await inspectQoderResponse(response, inspectCtx);
 
@@ -1285,6 +1340,9 @@ export class QoderExecutor extends BaseExecutor {
         doFetch,
         timeoutRetryOptions: TIMEOUT_RETRY,
         inspectCtx,
+        continueFetch,
+        hasTools: Array.isArray(body.tools) && body.tools.length > 0,
+        maxContinuations: autoContinueMax,
       });
       return {
         response: queued,
@@ -1304,28 +1362,8 @@ export class QoderExecutor extends BaseExecutor {
     // Auto-continue guard: if the model ends the turn right after announcing
     // the next step (no tool call), issue one hidden continuation request and
     // splice its stream into this response so the agent loop keeps running.
-    const continueFetch = async (danglingText) => {
-      const nudgedBody = {
-        ...body,
-        messages: [
-          ...(body.messages || []),
-          { role: "assistant", content: danglingText },
-          {
-            role: "user",
-            content:
-              "Continue now: execute the step you just announced with a tool call in this turn. Do not restate the intent.",
-          },
-        ],
-      };
-      const built = await buildQoderRequestBody({ model, body: nudgedBody, credentials, log, proxyOptions, signal });
-      const req = makeAttemptRequest(true, built.payload);
-      const resp = await fetchRequest(req);
-      const inspectedNext = await inspectQoderResponse(resp, inspectCtx);
-      if (inspectedNext.queued || inspectedNext.errorInfo || !inspectedNext.response?.ok) return null;
-      return wrapQoderSSE(inspectedNext.response, `qoder/${qoderKey}`);
-    };
-
     const wrapped = wrapQoderSSE(response, `qoder/${qoderKey}`, {
+      maxContinuations: autoContinueMax,
       continueFetch,
       hasTools: Array.isArray(body.tools) && body.tools.length > 0,
       log,
