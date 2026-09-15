@@ -1,0 +1,14 @@
+Regression: npx vitest run tests/unit/qoder-session-isolation.test.js --reporter=dot
+Result: 3 tests passed
+
+Related: npx vitest run tests/unit/qoder-session-isolation.test.js tests/unit/qoder.test.js tests/unit/qoder-queue-stream.test.js tests/unit/qoder-auto-continue.test.js tests/unit/qoder-context-overflow.test.js tests/unit/qoder-first-token-timeout.test.js tests/unit/codex-auto-continue.test.js tests/unit/codex-504-retry-ladder.test.js --reporter=dot
+Result: 8 test files passed, 95 tests passed
+
+Build: npm run build
+Result: passed
+
+Lint: npx eslint open-sse/handlers/chatCore.js open-sse/executors/qoder.js tests/unit/qoder-session-isolation.test.js
+Result: passed
+
+Diff check: git diff --check
+Result: passed

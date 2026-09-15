@@ -38,6 +38,7 @@ import {
 import { getQoderModelConfig, resolveQoderModels } from "../services/qoderModels.js";
 import { resolveCodexErrorCode, withRetryAfterHint, CONTEXT_OVERFLOW_HEADERS } from "../config/errorConfig.js";
 import { buildErrorBody } from "../utils/error.js";
+import { resolveSessionId } from "../utils/sessionManager.js";
 import {
   estimateRequestTokens,
   evaluateContextAdmission,
@@ -777,10 +778,12 @@ function stableHash(prefix, ...parts) {
   return h.digest("hex").slice(0, 16);
 }
 
-function stableChatRecordId(model, messages, tools, maxTokens) {
+function stableChatRecordId(model, messages, tools, maxTokens, sessionId) {
   const h = createHash("sha256");
   h.update("qoder-record\0");
   h.update(String(model));
+  h.update("\0session=");
+  h.update(String(sessionId || ""));
   for (const m of messages) {
     if (!m || typeof m !== "object") continue;
     if (m.role) { h.update("\0"); h.update(m.role); }
@@ -850,7 +853,7 @@ function truncate(s, n) {
 /**
  * Map the OpenAI-style request body into the exact shape Qoder expects.
  */
-async function buildQoderRequestBody({ model, body, credentials, log, proxyOptions, signal }) {
+async function buildQoderRequestBody({ model, body, credentials, log, proxyOptions, signal, clientSessionId }) {
   const qoderKey = String(model || "").replace(/^qoder\//, "");
   
   // Fetch model config from dynamic API instead of relying on static QODER_MODEL_MAP.
@@ -886,8 +889,21 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
 
   const lastUser = lastUserText(messages);
   const psd = credentials.providerSpecificData || {};
-  const sessionId = stableHash("qoder-session", psd.userId, qoderKey);
-  const recordId = stableChatRecordId(qoderKey, messages, tools, maxTokens);
+  // Qoder keeps server-side state by session_id. The account is not a
+  // conversation boundary: two clients can legitimately use the same account
+  // at the same time. chatCore resolves the client conversation identity before
+  // translation so it survives providers that strip client metadata.
+  const resolvedClientSessionId =
+    typeof clientSessionId === "string" && clientSessionId.trim()
+      ? clientSessionId.trim()
+      : resolveSessionId({
+          headers: credentials?.rawHeaders,
+          body,
+          connectionId: credentials?.connectionId,
+          scope: "qoder",
+        });
+  const sessionId = stableHash("qoder-session", qoderKey, resolvedClientSessionId);
+  const recordId = stableChatRecordId(qoderKey, messages, tools, maxTokens, sessionId);
 
   return {
     qoderKey,
@@ -1243,7 +1259,7 @@ export class QoderExecutor extends BaseExecutor {
   //   - body encoded with QoderEncodeBody before signing
   //   - COSY headers built from the *encoded* body bytes
   //   - response stream re-wrapped from {statusCodeValue, body} to OpenAI SSE
-  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, metrics = null }) {
+  async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, metrics = null, clientSessionId }) {
     const url = this.buildUrl();
 
     const psd = credentials?.providerSpecificData || {};
@@ -1270,7 +1286,7 @@ export class QoderExecutor extends BaseExecutor {
     let modelConfig;
     let payload;
     try {
-      ({ qoderKey, payload, modelConfig } = await buildQoderRequestBody({ model, body, credentials, log, proxyOptions, signal }));
+      ({ qoderKey, payload, modelConfig } = await buildQoderRequestBody({ model, body, credentials, log, proxyOptions, signal, clientSessionId }));
     } catch (err) {
       const fakeResp = new Response(
         JSON.stringify({ error: { message: err.message } }),
@@ -1439,7 +1455,7 @@ export class QoderExecutor extends BaseExecutor {
           { role: "user", content: CONTINUE_NUDGE },
         ],
       };
-      const built = await buildQoderRequestBody({ model, body: nudgedBody, credentials, log, proxyOptions, signal });
+      const built = await buildQoderRequestBody({ model, body: nudgedBody, credentials, log, proxyOptions, signal, clientSessionId });
       const req = makeAttemptRequest(true, built.payload);
       const resp = await fetchRequest(req);
       const inspectedNext = await inspectQoderResponse(resp, inspectCtx);
