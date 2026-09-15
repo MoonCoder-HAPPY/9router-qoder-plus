@@ -31,6 +31,20 @@ const DEFAULT_MODEL_IDLE_ALERT = {
   messageTemplate: "[9router] No successful model call for {idleMinutes} minutes. Last call: {lastCallAt}.",
 };
 
+const DEFAULT_CODEX_COMPAT = {
+  autoCompactRatio: 0.5,
+  autoCompactMin: 120000,
+  autoCompactMax: 500000,
+  proactiveContextGuard: true,
+  autoContinueMax: 1,
+  firstTokenTimeoutFallback: "account-then-budget",
+  rateLimitRetryAfterCapMs: 120000,
+};
+
+function normalizeCodexCompatForm(value) {
+  return { ...DEFAULT_CODEX_COMPAT, ...(value || {}) };
+}
+
 function normalizeIdleAlertForm(value) {
   return {
     ...DEFAULT_MODEL_IDLE_ALERT,
@@ -80,6 +94,9 @@ export default function ProfilePage() {
   const [proxyLoading, setProxyLoading] = useState(false);
   const [proxyTestLoading, setProxyTestLoading] = useState(false);
   const [idleAlertForm, setIdleAlertForm] = useState(DEFAULT_MODEL_IDLE_ALERT);
+  const [codexCompatForm, setCodexCompatForm] = useState(DEFAULT_CODEX_COMPAT);
+  const [codexCompatLoading, setCodexCompatLoading] = useState(false);
+  const [codexCompatStatus, setCodexCompatStatus] = useState({ type: "", message: "" });
   const [idleAlertLoading, setIdleAlertLoading] = useState(false);
   const [idleAlertTestLoading, setIdleAlertTestLoading] = useState(false);
   const [idleAlertStatus, setIdleAlertStatus] = useState({ type: "", message: "" });
@@ -108,6 +125,7 @@ export default function ProfilePage() {
           outboundNoProxy: data?.outboundNoProxy || "",
         });
         setIdleAlertForm(normalizeIdleAlertForm(data?.modelIdleAlert));
+        setCodexCompatForm(normalizeCodexCompatForm(data?.codexCompat));
         setLoading(false);
       })
       .catch((err) => {
@@ -483,6 +501,44 @@ export default function ProfilePage() {
 
   const updateIdleAlertForm = (field, value) => {
     setIdleAlertForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const updateCodexCompatForm = (field, value) => {
+    setCodexCompatForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const saveCodexCompat = async (e) => {
+    e.preventDefault();
+    setCodexCompatLoading(true);
+    setCodexCompatStatus({ type: "", message: "" });
+    const payload = {
+      ...codexCompatForm,
+      autoCompactRatio: Number(codexCompatForm.autoCompactRatio),
+      autoCompactMin: Number(codexCompatForm.autoCompactMin),
+      autoCompactMax: Number(codexCompatForm.autoCompactMax),
+      autoContinueMax: Number(codexCompatForm.autoContinueMax),
+    };
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ codexCompat: payload }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setCodexCompatStatus({ type: "error", message: data.error || "Failed to save Codex settings" });
+        return false;
+      }
+      setSettings((prev) => ({ ...prev, ...data }));
+      setCodexCompatForm(normalizeCodexCompatForm(data?.codexCompat));
+      setCodexCompatStatus({ type: "success", message: "Codex compatibility settings saved" });
+      return true;
+    } catch (err) {
+      setCodexCompatStatus({ type: "error", message: err.message });
+      return false;
+    } finally {
+      setCodexCompatLoading(false);
+    }
   };
 
   const saveModelIdleAlert = async (e) => {
@@ -1162,6 +1218,95 @@ export default function ProfilePage() {
               </p>
             )}
           </div>
+        </Card>
+
+        {/* Codex Compatibility */}
+        <Card>
+          <div className="flex items-center gap-3 mb-4">
+            <div className="p-2 rounded-lg bg-blue-500/10 text-blue-500 shrink-0">
+              <span className="material-symbols-outlined text-[20px]">tune</span>
+            </div>
+            <div className="flex-1 min-w-0">
+              <h3 className="text-base sm:text-lg font-semibold">Codex Compatibility</h3>
+              <p className="text-xs sm:text-sm text-text-muted">
+                Thresholds advertised to Codex and the guards applied before calling the upstream.
+              </p>
+            </div>
+          </div>
+
+          <form onSubmit={saveCodexCompat} className="flex flex-col gap-4">
+            <div className="flex items-start sm:items-center justify-between gap-4">
+              <div className="flex-1 min-w-0">
+                <p className="font-medium text-sm sm:text-base">Proactive context guard</p>
+                <p className="text-xs sm:text-sm text-text-muted">
+                  Reject an oversized prompt before the upstream call so Codex compacts losslessly instead of hitting the ceiling.
+                </p>
+              </div>
+              <Toggle
+                checked={codexCompatForm.proactiveContextGuard === true}
+                onChange={() => updateCodexCompatForm("proactiveContextGuard", !(codexCompatForm.proactiveContextGuard === true))}
+                disabled={loading || codexCompatLoading}
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2 border-t border-border/50">
+              <div className="flex flex-col gap-2">
+                <label className="font-medium text-sm sm:text-base">Compaction ratio</label>
+                <Input type="number" min="0.05" max="1" step="0.05"
+                  value={codexCompatForm.autoCompactRatio}
+                  onChange={(e) => updateCodexCompatForm("autoCompactRatio", e.target.value)}
+                  disabled={loading || codexCompatLoading} />
+              </div>
+              <div className="flex flex-col gap-2">
+                <label className="font-medium text-sm sm:text-base">Compaction floor</label>
+                <Input type="number" min="1000" step="1000"
+                  value={codexCompatForm.autoCompactMin}
+                  onChange={(e) => updateCodexCompatForm("autoCompactMin", e.target.value)}
+                  disabled={loading || codexCompatLoading} />
+              </div>
+              <div className="flex flex-col gap-2">
+                <label className="font-medium text-sm sm:text-base">Compaction ceiling</label>
+                <Input type="number" min="1000" step="1000"
+                  value={codexCompatForm.autoCompactMax}
+                  onChange={(e) => updateCodexCompatForm("autoCompactMax", e.target.value)}
+                  disabled={loading || codexCompatLoading} />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="flex flex-col gap-2">
+                <label className="font-medium text-sm sm:text-base">Auto-continue attempts</label>
+                <Input type="number" min="0" max="5" step="1"
+                  value={codexCompatForm.autoContinueMax}
+                  onChange={(e) => updateCodexCompatForm("autoContinueMax", e.target.value)}
+                  disabled={loading || codexCompatLoading} />
+              </div>
+              <div className="flex flex-col gap-2">
+                <label className="font-medium text-sm sm:text-base">First-token timeout fallback</label>
+                <select
+                  className="h-10 rounded-lg border border-border bg-transparent px-3 text-sm"
+                  value={codexCompatForm.firstTokenTimeoutFallback}
+                  onChange={(e) => updateCodexCompatForm("firstTokenTimeoutFallback", e.target.value)}
+                  disabled={loading || codexCompatLoading}
+                >
+                  <option value="account-then-budget">Switch account, then wait longer</option>
+                  <option value="budget-only">Wait longer on the same account</option>
+                  <option value="off">Keep the legacy retry ladder</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 pt-2 border-t border-border/50">
+              <Button type="submit" disabled={codexCompatLoading}>
+                {codexCompatLoading ? "Saving..." : "Save"}
+              </Button>
+              {codexCompatStatus.message && (
+                <p className={`text-xs sm:text-sm ${codexCompatStatus.type === "error" ? "text-red-500" : "text-green-500"}`}>
+                  {codexCompatStatus.message}
+                </p>
+              )}
+            </div>
+          </form>
         </Card>
 
         {/* Model Idle Alert */}

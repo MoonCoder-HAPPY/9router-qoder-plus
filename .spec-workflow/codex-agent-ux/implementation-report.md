@@ -108,3 +108,14 @@ C. 冻结当前 70 为基线，CI 仅跑受影响子集（覆盖最窄）。
 - 门禁：`70/70 → OK`
 - **待办（切片 2/2）**：把 `reasoningEvents / compactionTriggers / contextPeakEstimate / admissionRejectReason` 落进 `requestDetails` 并在请求详情面板展示；与工单 02 切片 3（Dashboard「Codex 适配」设置分组）合并为同一批前端改动
 - 实施记录：一次索引定位插入误落到 keepalive 函数内（会导致每个 keepalive 都打日志），已回退并改用正向定位，验证仅 1 处、语义正确
+## 工单 02 切片 3/3（Dashboard「Codex Compatibility」）— 完成 → **工单 02 关闭**
+
+- Profile 页新增 Codex Compatibility 卡片：主动准入开关（Toggle）、压缩系数/下限/上限（Input）、续跑次数（Input）、504 策略（select：换账号后延时 / 仅延时 / 保持旧阶梯）+ 保存按钮与状态提示
+- 读写走既有 `PATCH /api/settings`（已确认 PATCH 处理器内即含 `codexCompat` 归一化）；保存后用响应里的规范化值回填表单
+- 验证：`npx eslint` 该页面 **0 错误**（JSX 解析通过）；`codex-compat-settings` 3/3 + `codex-compat` 5/5 + `zh-cn-literals` 1/1；基线门禁 `70/70 → OK`
+- 说明：新卡片沿用 DingTalk 区的纯英文文案风格（该区域未走 i18n 词典），因此无需新增 zh-CN 键
+
+## 工单 09 剩余（切片 2/2，仍未完成）
+
+- 待办：把 `reasoningEvents / compactionTriggers / contextPeakEstimate / admissionRejectReason` 从执行器/翻译层落到 `requestDetails`，并在请求详情面板展示
+- 现状：日志侧已可用（`[CODEX] …` 四类行），但**面板与落库还没有**，工单 09 保持开启
