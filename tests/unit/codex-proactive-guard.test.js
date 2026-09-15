@@ -77,7 +77,10 @@ describe("proactive context admission", () => {
   it("rejects an oversized prompt before any upstream call", async () => {
     const executor = new QoderExecutor();
     // 400k CJK chars ≈ 700k tokens — well past the 500k compaction threshold.
-    const result = await executor.execute({ model: "qoder/dfmodel", body: bigBody(400000), stream: true, credentials, signal: null, log: null });
+    const metrics = {};
+    const result = await executor.execute({ model: "qoder/dfmodel", body: bigBody(400000), stream: true, credentials, signal: null, log: null, metrics });
+    expect(metrics.compactionTriggers).toBe(1);
+    expect(metrics.admissionRejectReason).toBe("context-window");
     expect(result.response.status).toBe(400);
     const payload = await result.response.json();
     expect(payload.error.code).toBe("context_length_exceeded");

@@ -10,7 +10,7 @@ const profilePage = read("src/app/(dashboard)/dashboard/profile/page.js");
 describe("Codex UX surfaces in the dashboard", () => {
   it("shows the Codex metrics line in the request details table", () => {
     expect(detailsTab).toContain("detail.codex");
-    for (const field of ["reasoningEvents", "continuations", "contextPeakEstimate", "admissionRejectReason"]) {
+    for (const field of ["reasoningEvents", "continuations", "compactionTriggers", "contextPeakEstimate", "admissionRejectReason"]) {
       expect(detailsTab, `details tab must render ${field}`).toContain(field);
     }
   });

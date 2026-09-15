@@ -314,7 +314,7 @@ export default function RequestDetailsTab() {
                         <div>Total: <span className="font-mono">{detail.latency?.total || 0}ms</span></div>
                         {detail.codex && (
                           <div className="text-[11px] text-text-muted/80 pt-1">
-                            Codex: {detail.codex.reasoningEvents ?? 0} reasoning · {detail.codex.continuations ?? 0} continue
+                            Codex: {detail.codex.reasoningEvents ?? 0} reasoning · {detail.codex.continuations ?? 0} continue · {detail.codex.compactionTriggers ?? 0} compact
                             {detail.codex.contextPeakEstimate
                               ? ` · peak ${Math.round(detail.codex.contextPeakEstimate / 1000)}k`
                               : ""}
