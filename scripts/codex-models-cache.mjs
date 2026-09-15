@@ -14,12 +14,11 @@
  * Re-run it whenever the cache has expired (e.g. from a shell alias, a cron
  * entry every few minutes, or a wrapper that starts Codex).
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { mergeCodexCatalogs } from "../src/lib/qoder/codexCatalog.js";
 import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 const args = new Map();
