@@ -17,6 +17,28 @@ import { computeAutoCompactLimit } from "@/shared/services/codexCompat.js";
 /** Tier aliases are callable but should not clutter the model picker. */
 const HIDDEN_SLUGS = new Set(["auto", "ultimate", "performance", "efficient", "lite"]);
 
+// Codex refuses a whole model-catalog entry whose model carries neither
+// `base_instructions` nor `model_messages.instructions_template` (runtime check,
+// not a serde default), so every entry ships an explicit template.
+const BASE_INSTRUCTIONS_TEMPLATE =
+  "You are a coding agent. Follow the user's instructions, use the provided tools when they help, and answer concisely.";
+
+// ModelMessages has only two fields with serde defaults, so the remaining optional
+// fields must be present (null is fine) for deserialization to succeed.
+const MODEL_MESSAGES = Object.freeze({
+  persistent_instructions: null,
+  tools: null,
+  instructions_template: BASE_INSTRUCTIONS_TEMPLATE,
+  instructions_variables: null,
+  approvals: null,
+  collaboration_modes: null,
+  auto_review: null,
+  permissions: null,
+  multi_agent: null,
+  token_budget: null,
+  confirmation_policies: null,
+  guardian_v2: null,
+});
 const REASONING_LEVELS = [
   { effort: "low", description: "Fast, minimal deliberation" },
   { effort: "medium", description: "Balanced deliberation" },
@@ -66,7 +88,7 @@ export function buildCodexCatalogEntries(models, options = {}) {
       available_access_programs: null,
       availability_nux: null,
       upgrade: null,
-      model_messages: null,
+      model_messages: { ...MODEL_MESSAGES },
       include_skills_usage_instructions: false,
       include_plugin_usage_instructions: false,
       include_apps_usage_instructions: false,

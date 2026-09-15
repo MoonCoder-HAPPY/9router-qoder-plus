@@ -30,6 +30,21 @@ describe("Codex model catalog contract", () => {
     expect(models.map((m) => m.slug)).toEqual(["DeepSeek-Flash", "Lite", "Auto"]);
   });
 
+  it("ships the instruction template Codex validates at load time", () => {
+    for (const model of models) {
+      expect(typeof model.model_messages?.instructions_template, `${model.slug} instructions`).toBe("string");
+      expect(model.model_messages.instructions_template.length).toBeGreaterThan(20);
+      // ModelMessages fields without serde defaults must be present.
+      for (const key of [
+        "persistent_instructions", "tools", "instructions_template", "instructions_variables",
+        "approvals", "collaboration_modes", "auto_review", "permissions", "multi_agent",
+        "token_budget", "confirmation_policies", "guardian_v2",
+      ]) {
+        expect(model.model_messages, `${model.slug} model_messages.${key}`).toHaveProperty(key);
+      }
+    }
+  });
+
   it("emits every ModelInfo field Codex requires", () => {
     for (const model of models) {
       for (const key of REQUIRED_KEYS) expect(model, `${model.slug} missing ${key}`).toHaveProperty(key);
