@@ -13,7 +13,7 @@ RUN apk --no-cache upgrade && apk --no-cache add python3 make g++ linux-headers
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm \
   npm config set registry https://registry.npmmirror.com && \
-  npm ci
+  npm ci --ignore-scripts
 
 COPY . ./
 ENV NEXT_TELEMETRY_DISABLED=1
