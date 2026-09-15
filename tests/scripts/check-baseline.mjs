@@ -15,7 +15,7 @@
  *   <path-relative-to-tests>/<file>.test.js :: <full test name>
  */
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync, mkdtempSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -25,13 +25,25 @@ const update = process.argv.includes("--update");
 const tmpDir = mkdtempSync(path.join(tmpdir(), "9router-baseline-"));
 const reportPath = path.join(tmpDir, "vitest-report.json");
 
+/** vitest lives in tests/node_modules locally and in the repo root in CI. */
+const resolveVitest = () => {
+  const candidates = [
+    path.join(repoRoot, "node_modules/vitest/vitest.mjs"),
+    path.join(repoRoot, "tests/node_modules/vitest/vitest.mjs"),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  console.error(`vitest not found; looked in:${candidates.join(", ")}`);
+  process.exit(2);
+};
+
 const run = () => {
   try {
     execFileSync(
       process.execPath,
       [
-        // vitest lives in tests/node_modules (installed by `npm --prefix tests install`)
-        path.join(repoRoot, "tests/node_modules/vitest/vitest.mjs"),
+        resolveVitest(),
         "run",
         "--config",
         "tests/vitest.config.js",
