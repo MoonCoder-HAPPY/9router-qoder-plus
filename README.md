@@ -242,6 +242,40 @@ _钉钉告警设置支持空闲阈值、告警冷却、Webhook、加签 Secret �
 - `Alert Cooldown` 填 `0` 表示不额外冷却。
 - 页面提供 `Test DingTalk` 按钮，可保存配置后立即发送测试消息。
 
+### Codex 接入（模型元数据与思考展示）
+
+Codex 对**自定义 provider 不会请求 `/v1/models`**，它读取本地缓存 `~/.codex/models_cache.json`：该缓存**只有 300 秒有效期**，且必须与客户端版本匹配、每个模型都必须带指令模板。缓存不存在或过期时，Codex 会退回内置的 272k 兜底元数据 —— 表现就是**长会话压缩过晚（撞上下文）**、**思考过程不展示**。
+
+一次性/定期刷新缓存：
+
+```bash
+node scripts/codex-models-cache.mjs --base http://<9router>:20128 --key <API_KEY>
+# 可选：--client-version 0.154.0（默认先读现有缓存，其次读 `codex --version`）
+# 可选：--out ~/.codex/models_cache.json
+```
+
+`config.toml` 参考（Codex CLI / 桌面端）：
+
+```toml
+model = "DeepSeek-Flash"
+model_provider = "nine"
+model_reasoning_effort = "high"
+model_reasoning_summary = "detailed"
+
+[model_providers.nine]
+name = "9router"
+base_url = "http://<9router>:20128/v1"
+env_key = "NINER_KEY"
+wire_api = "responses"
+```
+
+因为缓存 300 秒即过期，建议**每次启动 Codex 前跑一次刷新脚本**（放进 shell 别名或启动包装脚本）。
+
+验证是否生效（应为 `0`）：
+
+```bash
+RUST_LOG=codex_models_manager=warn codex exec --json "hello" 2>&1 >/dev/null | grep -c "fallback model metadata"
+```
 ## Docker 部署
 
 ### 时区（可选）

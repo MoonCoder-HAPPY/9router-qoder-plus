@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildCodexCatalogEntries } from "../../src/lib/qoder/codexCatalog.js";
+import { buildCodexCatalogEntries, buildCodexModelsCache, isCodexModelsCacheFresh } from "../../src/lib/qoder/codexCatalog.js";
 
 // Fields Codex's ModelInfo deserializer requires (nullable ones must be present).
 const REQUIRED_KEYS = [
@@ -87,5 +87,29 @@ describe("Codex model catalog contract", () => {
   it("returns an empty catalog when there are no qoder models", () => {
     expect(buildCodexCatalogEntries([])).toEqual([]);
     expect(buildCodexCatalogEntries(null)).toEqual([]);
+  });
+});
+
+describe("Codex models cache envelope", () => {
+  const entries = buildCodexCatalogEntries(data);
+
+  it("wraps the catalog the way the client reads it", () => {
+    const now = Date.parse("2026-09-15T03:25:35Z");
+    const cache = buildCodexModelsCache(entries, { clientVersion: "0.154.0", now });
+    expect(cache.client_version).toBe("0.154.0");
+    expect(cache.fetched_at).toBe("2026-09-15T03:25:35.000Z");
+    expect(cache.models).toHaveLength(entries.length);
+    expect(cache.etag).toBeUndefined();
+  });
+
+  it("refuses to build a cache without a client version (the client rejects it)", () => {
+    expect(() => buildCodexModelsCache(entries, {})).toThrow(/clientVersion is required/);
+  });
+
+  it("knows the 300s freshness window the client enforces", () => {
+    const now = Date.parse("2026-09-15T03:25:35Z");
+    expect(isCodexModelsCacheFresh("2026-09-15T03:25:00Z", now)).toBe(true);
+    expect(isCodexModelsCacheFresh("2026-09-15T03:20:00Z", now)).toBe(false);
+    expect(isCodexModelsCacheFresh("not-a-date", now)).toBe(false);
   });
 });

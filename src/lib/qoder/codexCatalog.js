@@ -123,3 +123,34 @@ export function buildCodexCatalogEntries(models, options = {}) {
 
   return out;
 }
+/**
+ * Wrap a Codex model catalog in the on-disk cache envelope the client reads
+ * (`~/.codex/models_cache.json`).
+ *
+ * Why this exists: Codex does not call `GET /v1/models` for a custom provider —
+ * it loads this file and validates it (client version must match, the entry is
+ * only fresh for 300s, and every model needs an instruction template). Seeding
+ * the file is what actually gets a custom provider's real context window,
+ * compaction threshold and reasoning levels into the client.
+ */
+export const CODEX_MODELS_CACHE_TTL_MS = 300 * 1000;
+
+export function buildCodexModelsCache(models, { clientVersion, now = Date.now(), etag = null } = {}) {
+  const entries = Array.isArray(models) ? models.filter((model) => model && model.slug) : [];
+  if (!clientVersion) {
+    throw new Error("clientVersion is required: Codex rejects a cache whose client_version does not match its own build");
+  }
+  return {
+    fetched_at: new Date(now).toISOString(),
+    ...(etag ? { etag } : {}),
+    client_version: String(clientVersion),
+    models: entries,
+  };
+}
+
+/** True when a cache written at `fetchedAt` is still usable by the client. */
+export function isCodexModelsCacheFresh(fetchedAt, now = Date.now()) {
+  const ts = Date.parse(String(fetchedAt || ""));
+  if (!Number.isFinite(ts)) return false;
+  return now - ts < CODEX_MODELS_CACHE_TTL_MS;
+}
