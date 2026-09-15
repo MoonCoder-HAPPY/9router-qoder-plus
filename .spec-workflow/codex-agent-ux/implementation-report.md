@@ -273,3 +273,23 @@ sudo docker stop 9router && sudo docker rm 9router && sudo docker start 9router-
 **完整性证明**：分支内 19 个生产文件在「本地提交」与「构建候选镜像的服务器源码」之间 **逐个 SHA256 一致**（LF 归一化），排除"镜像里不是提交代码"的风险。
 
 **最终就绪状态**（生产未动）：生产 `9router` v39c running/0 重启/健康；回滚容器 `9router-before-codex-ux-20260915` created/env=22/v39c；候选 `9router:qoder-plus-codex-ux-v40`；影子实例 20131 healthy；CI run `34933900304` success；切换与回滚脚本 `~/switch-to-codex-ux.sh`、`~/rollback-codex-ux.sh`（`bash -n` 通过，仓库内副本见 `scripts/ops/`）。
+## 客户端"内置目录"能力（2026-09-15 新增，回答"能不能内置掉"）
+
+**背景**：Codex 针对自定义 provider 读 `~/.codex/models_cache.json`，该文件 **300 秒过期**且绑定客户端版本 → 需要反复生成。
+**解法（已实现并实测）**：Codex 支持 `model_catalog_json = "<绝对路径>"` 指向一份**静态目录**（走 `StaticModelsManager`，无 TTL、无刷新 worker、运行时不需要 API key）。因为该键**替换**而非追加内置目录，脚本会调用 `codex debug models`（临时 `CODEX_HOME`，避免自身配置干扰）取回客户端自带目录并**合并**，避免出现 `gpt-5.6-luna` 之类的辅助模型 fallback 警告。
+
+**实现**（`scripts/codex-models-cache.mjs` + `codexCatalog.mergeCodexCatalogs`）：
+```bash
+node scripts/codex-models-cache.mjs --base http://<router>:20128 --key <API_KEY> \
+  --catalog-out ~/.codex/models_catalog.json --merge-bundled
+# config.toml: model_catalog_json = "/home/<you>/.codex/models_catalog.json"
+```
+
+**实测证据**（影子实例 20131，动态缓存文件已移走，仅靠静态目录）：
+| 客户端 | 结果 |
+| --- | --- |
+| CLI 0.154.0 ×2 | `rc=0`、`fallback=0`、`reasoning=1`、回答正确（Paris） |
+| app-server（桌面 App 引擎，60s） | `fallback warnings = 0` |
+| 目录规模 | 27 = 11 客户端自带 + 16 9router 模型 |
+
+**遗留注意**：模型增减或 Codex 升级后重新生成一次；CLI 与 app-server 均已实测，桌面 GUI 的界面层未实测。
