@@ -26,5 +26,5 @@ jobs:
       - name: Install test dependencies
         run: npm --prefix tests install --no-audit --no-fund
 
-      - name: Run unit tests (baseline gate: no new failures)
+      - name: Run unit tests (baseline gate, no new failures)
         run: node tests/scripts/check-baseline.mjs
