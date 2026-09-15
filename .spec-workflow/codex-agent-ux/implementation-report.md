@@ -127,3 +127,27 @@ C. 冻结当前 70 为基线，CI 仅跑受影响子集（覆盖最窄）。
 - 测试：`codex-observability` 2/2（含"共享 metrics 对象被填充"）
 - 验证：tab 页 `eslint` 仅剩 2 处**改动前既有**的 react-hooks 报错（diff 仅 +11 行，与本次插入无关）；基线门禁 `70/70 → OK`
 - 实施记录：一次 2 空格锚点同时命中队列签名与 `wrapQoderSSE` 解构，造成 `metrics` 重复声明；已定位并删除重复项后复测
+## ⚠️ 重要更正（2026-09-15，工单 10 真客户端验证）
+
+**前一条结论作废**：我曾根据"`Unknown model` 警告数 = 0"判断真 Codex CLI 已读到我们的 `/v1/models` 目录。**这是错的**——Codex 0.154.0 的警告文案不是 `Unknown model`，而是：
+
+```
+"type":"error","message":"Model metadata for `DeepSeek-Flash` not found.
+ Defaulting to fallback metadata; this can degrade performance and cause issues."
+```
+
+即：**真客户端仍在使用 272k 兜底元数据，工单 03 的目录修复尚未在客户端生效**（协议级探针通过 ≠ 客户端采纳）。判断依据本来就不成立（grep 的文案不对），已纠正。
+
+### 当前确证的与未确证的
+
+- 确证：CLI 能完整跑完一轮（`exec rc=0`）、回答文本正常返回；宿主无 npm 的坑已解；容器内 CLI 0.154.0 可用。
+- 确证：CLI 的 JSONL 里 **`reasoning items: 0`**，且带一条 metadata 缺失的 error item。
+- 未确证：reasoning 事件在真客户端的呈现（协议级 4/4 通过，但客户端侧无证据）。
+- 未确证：`/v1/models` 的 `models[]` 未被采纳的原因（未拿到 Codex 侧解码错误日志；可能是自定义 provider 根本不拉取 `/models`，也可能我们的 ModelInfo 反序列化失败）。
+
+### 下一步（必须先查清再谈灰度）
+
+1. 在 Codex 侧打开 debug（`RUST_LOG=codex_models_manager=debug,codex_api=debug`）复跑，确认它是否发起 `GET /v1/models` 以及我们的响应是否被成功反序列化；同时确认 `~/.codex/models_cache.json` 是否被写入。
+2. 若客户端对自定义 provider 不拉取目录：改用 **客户端配置兜底**（`model_context_window` / `model_auto_compact_token_limit` / `model_reasoning_summary` 写进 config.toml 或 README 配方），并在服务端保持 `models[]` 供支持该行为的客户端使用。
+3. reasoning item 缺失需在同一轮 debug 中一并定位（事件是否送达 / Codex 是否只接受 summary 且要求 `item/started`）。
+4. 上述 1–3 有结论前，**不做灰度、不切生产**。
