@@ -14,7 +14,7 @@
  * Baseline format (tests/__baseline__/known-fails.txt), one entry per line:
  *   <path-relative-to-tests>/<file>.test.js :: <full test name>
  */
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -39,25 +39,30 @@ const resolveVitest = () => {
 };
 
 const run = () => {
-  try {
-    execFileSync(
-      process.execPath,
-      [
-        resolveVitest(),
-        "run",
-        "--config",
-        "tests/vitest.config.js",
-        "--reporter=json",
-        `--outputFile=${reportPath}`,
-      ],
-      { cwd: repoRoot, stdio: ["ignore", "inherit", "inherit"] },
-    );
-  } catch {
-    /* non-zero exit is expected when failures exist; the report is what matters */
-  }
+  const result = spawnSync(
+    process.execPath,
+    [
+      resolveVitest(),
+      "run",
+      "--config",
+      "tests/vitest.config.js",
+      "--reporter=json",
+      `--outputFile=${reportPath}`,
+    ],
+    { cwd: repoRoot, encoding: "utf8" },
+  );
+  // Surface vitest's own output: a silent non-zero exit with no report is otherwise
+  // impossible to diagnose from CI.
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+  return result.status ?? 1;
 };
 
 const collectFailures = () => {
+  if (!existsSync(reportPath)) {
+    console.error("[baseline] vitest produced no report file - see its output above");
+    process.exit(2);
+  }
   const report = JSON.parse(readFileSync(reportPath, "utf8"));
   const failures = new Set();
   for (const file of report.testResults ?? []) {
@@ -77,7 +82,8 @@ const readBaseline = () =>
       .filter(Boolean),
   );
 
-run();
+const vitestStatus = run();
+if (vitestStatus !== 0 && !existsSync(reportPath)) process.exit(vitestStatus);
 const failures = collectFailures();
 
 if (update) {
