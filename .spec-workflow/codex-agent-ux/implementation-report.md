@@ -73,3 +73,10 @@ C. 冻结当前 70 为基线，CI 仅跑受影响子集（覆盖最窄）。
 - 测试：`tests/unit/codex-compat-settings.test.js` 3/3（临时 DB：默认值、持久化+钳制、不波及其它设置）；连带 `codex-compat` 5/5；门禁 `70/70 → OK`
 - 测试过程中发现并修正两处真实缺陷：仓库层未归一化（直接调用会存越界值）、浅合并导致部分更新抹掉同级阈值
 - 待办（切片 3/3）：Dashboard「Codex 适配」分组 UI + `zh-CN` 文案
+## 工单 06（主动上下文准入）— 完成
+
+- 新增 `open-sse/utils/contextAdmission.js`：CJK 感知保守估算（CJK 1.7 token/字、其它 0.4、×1.1 安全系数、含 tools+max_tokens）、`evaluateContextAdmission`（guard 关闭/无窗口/触顶保护/超限拒绝）、60s 窗口连续拒绝计数（上限 3 次后放行，避免把客户端困在拒绝循环里）
+- `open-sse/executors/qoder.js`：在构建 payload 之后、发起上游之前做准入判断；拒绝时直接返回 `400 context_length_exceeded`（**0 上游调用**）
+- 测试：`tests/unit/codex-proactive-guard.test.js` 4/4 —— 超限未打上游、正常放行、触顶保护、开关关闭行为不变
+- 实施中发现真实缺陷：`execute()` 未解构 `modelConfig`，守卫首版会被 catch 静默跳过（已修并复测）
+- 基线门禁：`70/70 → OK`

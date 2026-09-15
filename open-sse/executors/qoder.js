@@ -37,6 +37,14 @@ import {
 } from "../shared/qoder/constants.js";
 import { getQoderModelConfig, resolveQoderModels } from "../services/qoderModels.js";
 import { resolveCodexErrorCode, withRetryAfterHint } from "../config/errorConfig.js";
+import { buildErrorBody } from "../utils/error.js";
+import {
+  estimateRequestTokens,
+  evaluateContextAdmission,
+  noteContextRejection,
+  recentContextRejections,
+} from "../utils/contextAdmission.js";
+import { getCodexCompatSettings, computeAutoCompactLimit } from "@/shared/services/codexCompat.js";
 
 // ============ 9router-fix: Qoder queue-aware retry patch ============
 // Qoder rate-limits by returning HTTP 403 with a nested body containing
@@ -1119,9 +1127,10 @@ export class QoderExecutor extends BaseExecutor {
     }
 
     let qoderKey;
+    let modelConfig;
     let payload;
     try {
-      ({ qoderKey, payload } = await buildQoderRequestBody({ model, body, credentials, log, proxyOptions, signal }));
+      ({ qoderKey, payload, modelConfig } = await buildQoderRequestBody({ model, body, credentials, log, proxyOptions, signal }));
     } catch (err) {
       const fakeResp = new Response(
         JSON.stringify({ error: { message: err.message } }),
@@ -1130,6 +1139,39 @@ export class QoderExecutor extends BaseExecutor {
       return { response: fakeResp, url, headers: {}, transformedBody: body };
     }
 
+    // Proactive context admission: when the prompt is already past the compaction
+    // threshold Codex uses, answer with context_length_exceeded straight away. The
+    // client then compacts losslessly and retries, instead of burning a slow upstream
+    // call that can only end in "maximum context length".
+    try {
+      const codexCompat = await getCodexCompatSettings();
+      const contextWindow = Number(modelConfig?.max_input_tokens) || null;
+      const rejectionKey = `${psd.userId || credentials?.id || "anon"}:${qoderKey}`;
+      const admission = evaluateContextAdmission({
+        estimatedTokens: estimateRequestTokens(body),
+        contextWindow,
+        settings: codexCompat,
+        autoCompactLimit: computeAutoCompactLimit(contextWindow, codexCompat),
+        recentRejections: recentContextRejections(rejectionKey),
+      });
+      if (!admission.allowed) {
+        noteContextRejection(rejectionKey);
+        const message = `qoder/${qoderKey}: maximum context length exceeded (estimated ${admission.estimatedTokens} tokens, limit ${admission.limit}). Please reduce the length of your messages, then retry.`;
+        log?.warn?.("QODER", `context admission rejected before upstream (est ${admission.estimatedTokens} > ${admission.limit})`);
+        return {
+          response: new Response(
+            JSON.stringify(buildErrorBody(400, message, { code: "context_length_exceeded" })),
+            { status: 400, headers: { "Content-Type": "application/json" } },
+          ),
+          url,
+          headers: {},
+          transformedBody: body,
+        };
+      }
+    } catch (err) {
+      // Never let the guard break a request it cannot evaluate.
+      log?.warn?.("QODER", `context admission skipped: ${err.message}`);
+    }
     // 9router-fix: Qoder rejects queue retries with "Duplicate request" if
     // request ids are reused after an HTTP-200/SSE queued envelope. Keep the
     // semantic payload stable, but refresh request-level ids before each retry
