@@ -20,8 +20,15 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Pin a stable npm
+        # The runner's bundled npm trips its arborist bug ('Cannot read properties of
+        # null (reading edgesOut)') on this dependency set.
+        run: npm install --global npm@10 --no-audit --no-fund
+
       - name: Install app dependencies
-        run: npm install --no-audit --no-fund
+        # optionalDependencies (better-sqlite3) are the other trigger; the runtime
+        # falls back to sql.js, so CI skips them.
+        run: npm install --no-audit --no-fund --omit=optional
 
       # vitest is a root devDependency: `npm --prefix tests install` and a second
       # `--no-save` install both hit npm's 'edgesOut' bug in CI, so the repo keeps a
