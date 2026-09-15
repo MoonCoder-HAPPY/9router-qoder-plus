@@ -19,6 +19,7 @@ import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { capabilitiesFromServiceKind, getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
 import { decorateQoderModelsForPublic } from "@/lib/qoder/publicModels.js";
 import { buildCodexCatalogEntries } from "@/lib/qoder/codexCatalog.js";
+import { QODER_CONTEXT_WINDOW } from "@/shared/services/codexCompat.js";
 
 // Per-provider live model resolvers. Each receives a connection record and
 // returns { models: [{ id, name? }, ...] } | null on failure.
@@ -509,16 +510,17 @@ export async function buildModelsList(kindFilter, options = {}) {
         let caps = liveCapabilitiesById.get(modelId)
           || capabilitiesFromServiceKind(customKind || liveKind)
           || (kind === LLM_KIND ? getCapabilitiesForModel(providerId, modelId) : null);
-        // Qoder publishes the real per-model input limit in its live catalog
-        // (max_input_tokens -> contextLength). The pattern-matched defaults claim
-        // 200k for *every* Qoder model, which misinforms any client that plans
-        // its context budget from /v1/models (DeepSeek-Flash is really 1M,
-        // Qwen3.8-Max is really 180k). Trust the live numbers when present.
+        // Qoder's live catalog reports a per-model input limit
+        // (max_input_tokens -> contextLength) that is not trustworthy: it says
+        // 180k for models that serve 1M, and both the pattern-matched defaults
+        // (200k for every model) and the live values understate the real window.
+        // Clients plan their context budget from /v1/models and Codex compacts at
+        // the smaller of the advertised window and auto_compact_token_limit, so a
+        // stale per-model number silently caps sessions far below what works.
+        // Every Qoder model therefore advertises the same unified window; the
+        // upstream value is still forwarded verbatim in the provider request.
         if (providerId === "qoder" && qoderPublicModel && caps) {
-          const liveContext = Number(qoderPublicModel.contextLength);
-          if (Number.isFinite(liveContext) && liveContext > 0) {
-            caps = { ...caps, contextWindow: liveContext };
-          }
+          caps = { ...caps, contextWindow: QODER_CONTEXT_WINDOW };
           const liveMaxOutput = Number(qoderPublicModel.maxOutputTokens);
           if (Number.isFinite(liveMaxOutput) && liveMaxOutput > 0) {
             caps = { ...caps, maxOutput: liveMaxOutput };

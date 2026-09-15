@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   CODEX_COMPAT_DEFAULTS,
+  QODER_CONTEXT_WINDOW,
   computeAutoCompactLimit,
   normalizeCodexCompatSettings,
 } from "../../src/shared/services/codexCompat.js";
@@ -10,9 +11,9 @@ describe("codexCompat settings", () => {
   it("applies documented defaults when nothing is configured", () => {
     const cfg = normalizeCodexCompatSettings({});
     expect(cfg).toEqual({
-      autoCompactRatio: 0.5,
+      autoCompactRatio: 0.9,
       autoCompactMin: 120000,
-      autoCompactMax: 500000,
+      autoCompactMax: 1000000,
       proactiveContextGuard: true,
       autoContinueMax: 1,
       firstTokenTimeoutFallback: "account-then-budget",
@@ -43,8 +44,17 @@ describe("codexCompat settings", () => {
   });
 
   it("computes a threshold below the real window for large contexts", () => {
-    expect(computeAutoCompactLimit(1000000)).toBe(500000);
-    expect(computeAutoCompactLimit(180000)).toBe(120000);
+    // 90% of the unified Qoder window: compact at 900K, not at half the window.
+    expect(computeAutoCompactLimit(QODER_CONTEXT_WINDOW)).toBe(900000);
+    expect(computeAutoCompactLimit(1000000)).toBe(900000);
+    expect(computeAutoCompactLimit(180000)).toBe(162000);
+  });
+
+  it("never bounds the unified window below its own ratio", () => {
+    // autoCompactMax must not pull the 900K line down, which is exactly what the
+    // old 500000 bound did to a 1M window.
+    expect(CODEX_COMPAT_DEFAULTS.autoCompactMax).toBeGreaterThanOrEqual(QODER_CONTEXT_WINDOW);
+    expect(computeAutoCompactLimit(QODER_CONTEXT_WINDOW)).toBeGreaterThan(500000);
   });
 
   it("never exceeds the model's own window for small models", () => {

@@ -14,7 +14,7 @@
 
 // Relative import (not the "@/" alias) so this module also runs from plain Node, which is
 // what scripts/codex-models-cache.mjs does when it generates a client catalog.
-import { computeAutoCompactLimit } from "../../shared/services/codexCompat.js";
+import { computeAutoCompactLimit, QODER_CONTEXT_WINDOW } from "../../shared/services/codexCompat.js";
 
 /** Tier aliases are callable but should not clutter the model picker. */
 const HIDDEN_SLUGS = new Set(["auto", "ultimate", "performance", "efficient", "lite"]);
@@ -68,9 +68,14 @@ export function buildCodexCatalogEntries(models, options = {}) {
     if (!slug || seen.has(slug)) continue;
     seen.add(slug);
 
-    const contextWindow = Number(model.capabilities?.contextWindow);
-    const hasWindow = Number.isFinite(contextWindow) && contextWindow > 0;
+    // Every Qoder model is described with the same window + compaction line.
+    // The upstream catalog reports a different (and inconsistent) window per
+    // model - 180k for models that happily serve 1M - and Codex compacts as soon
+    // as EITHER the compaction limit OR the advertised window is reached, so a
+    // stale 180k window would silently cap the session 5x below what works.
+    const contextWindow = QODER_CONTEXT_WINDOW;
     const maxOutput = Number(model.capabilities?.maxOutput);
+
     const vision = model.capabilities?.vision === true;
     const reasoner = model.capabilities?.reasoning === true;
 
@@ -102,9 +107,9 @@ export function buildCodexCatalogEntries(models, options = {}) {
       web_search_tool_type: "text",
       truncation_policy: { mode: "bytes", limit: 10000 },
       supports_image_detail_original: false,
-      context_window: hasWindow ? contextWindow : null,
-      max_context_window: hasWindow ? contextWindow : null,
-      auto_compact_token_limit: hasWindow ? computeAutoCompactLimit(contextWindow) : null,
+      context_window: contextWindow,
+      max_context_window: contextWindow,
+      auto_compact_token_limit: computeAutoCompactLimit(contextWindow),
       comp_hash: null,
       effective_context_window_percent: 100,
       experimental_supported_tools: [],

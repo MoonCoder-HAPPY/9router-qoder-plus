@@ -36,15 +36,16 @@ import {
   QODER_MODEL_MAP,
 } from "../shared/qoder/constants.js";
 import { getQoderModelConfig, resolveQoderModels } from "../services/qoderModels.js";
-import { resolveCodexErrorCode, withRetryAfterHint } from "../config/errorConfig.js";
+import { resolveCodexErrorCode, withRetryAfterHint, CONTEXT_OVERFLOW_HEADERS } from "../config/errorConfig.js";
 import { buildErrorBody } from "../utils/error.js";
 import {
   estimateRequestTokens,
   evaluateContextAdmission,
   noteContextRejection,
   recentContextRejections,
+  clearContextRejections,
 } from "../utils/contextAdmission.js";
-import { getCodexCompatSettings, computeAutoCompactLimit } from "@/shared/services/codexCompat.js";
+import { getCodexCompatSettings, computeAutoCompactLimit, QODER_CONTEXT_WINDOW } from "../../src/shared/services/codexCompat.js";
 
 // ============ 9router-fix: Qoder queue-aware retry patch ============
 // Qoder rate-limits by returning HTTP 403 with a nested body containing
@@ -300,7 +301,16 @@ function buildQoderEnvelopeErrorResponse(info, opts = {}) {
         ...(info.contextOverflow ? { param: "messages" } : {}),
       },
     }),
-    { status: info.status, headers: { "Content-Type": "application/json" } },
+    {
+      status: info.status,
+      headers: {
+        "Content-Type": "application/json",
+        // Upstream overflow is the same client-facing problem as a proactive
+        // rejection, so mark it identically: chatCore turns it into an SSE
+        // `response.failed` for Responses-API clients so they compact and retry.
+        ...(info.contextOverflow ? CONTEXT_OVERFLOW_HEADERS : {}),
+      },
+    },
   );
 }
 
@@ -967,6 +977,18 @@ function wrapQoderSSE(response, model, opts = {}) {
   let lastFinish = null;
   let turnText = "";
   let continuationsUsed = 0;
+  // Terminal frames are held back until we know whether this turn continues.
+  // Codex ends the turn (and aborts the in-flight request) the moment it sees a
+  // finish_reason, so forwarding one and *then* asking upstream for the rest
+  // produced "auto-continue request failed: This operation was aborted" and the
+  // client kept a truncated answer. Released below when no continuation follows.
+  let heldFinishFrame = null;
+  const isHeldTerminal = (chunk) => {
+    const reason = chunk?.choices?.[0]?.finish_reason;
+    // tool_calls is a genuine end of turn: the client still has work to do and
+    // will not be aborted, so it passes straight through.
+    return typeof reason === "string" && reason.length > 0 && reason !== "tool_calls";
+  };
 
   let reasoningDeltas = 0;
   const trackChunk = (chunk) => {
@@ -1040,6 +1062,10 @@ function wrapQoderSSE(response, model, opts = {}) {
     let chunk = null;
     try { chunk = JSON.parse(sanitized); } catch {}
     if (chunk) trackChunk(chunk);
+    if (isHeldTerminal(chunk)) {
+      heldFinishFrame = `data: ${sanitized}\n\n`;
+      return;
+    }
     controller.enqueue(encoder.encode(`data: ${sanitized}\n\n`));
   };
 
@@ -1059,6 +1085,10 @@ function wrapQoderSSE(response, model, opts = {}) {
     let chunk = null;
     try { chunk = JSON.parse(data); } catch { return; }
     trackChunk(chunk);
+    if (isHeldTerminal(chunk)) {
+      heldFinishFrame = `data: ${data}\n\n`;
+      return;
+    }
     controller.enqueue(encoder.encode(`data: ${data}\n\n`));
   };
 
@@ -1122,6 +1152,9 @@ function wrapQoderSSE(response, model, opts = {}) {
         ) {
           continuationsUsed += 1;
           if (metrics) metrics.continuations = continuationsUsed;
+          // This turn is not over after all - drop the terminal frame we held,
+          // otherwise the client would end the turn (and abort us) mid-stream.
+          heldFinishFrame = null;
           log?.info?.(
             "QODER",
             `auto-continue ${continuationsUsed}/${maxContinuations}: turn ended (finish=${lastFinish || "eof"}) with no tool call and a dangling intent`,
@@ -1143,6 +1176,12 @@ function wrapQoderSSE(response, model, opts = {}) {
         }
         log?.info?.(CODE_LOG, `stream_done reasoning_events=${reasoningDeltas} continuations=${continuationsUsed}`);
         if (!doneEmitted) {
+          // No continuation will follow: release the terminal frame now so the
+          // client closes the turn exactly as it did before this guard existed.
+          if (heldFinishFrame) {
+            controller.enqueue(encoder.encode(heldFinishFrame));
+            heldFinishFrame = null;
+          }
           controller.enqueue(encoder.encode(SSE_DONE));
           doneEmitted = true;
         }
@@ -1246,7 +1285,10 @@ export class QoderExecutor extends BaseExecutor {
     // call that can only end in "maximum context length".
     try {
       const codexCompat = await getCodexCompatSettings();
-      const contextWindow = Number(modelConfig?.max_input_tokens) || null;
+      // One window for every Qoder model: the upstream `max_input_tokens` says
+      // 180k for models that serve 1M, and using it here rejected sessions at a
+      // fifth of the window they actually had (see codexCompat.js).
+      const contextWindow = QODER_CONTEXT_WINDOW;
       const rejectionKey = `${psd.userId || credentials?.id || "anon"}:${qoderKey}`;
       const admission = evaluateContextAdmission({
         estimatedTokens: estimateRequestTokens(body),
@@ -1260,7 +1302,7 @@ export class QoderExecutor extends BaseExecutor {
         metrics.contextLimit = admission.limit;
       }
       if (admission.allowed && admission.limit && admission.estimatedTokens > admission.limit * 0.7) {
-        log?.info?.(CODE_LOG, `context_peak est=${admission.estimatedTokens} limit=${admission.limit} window=${contextWindow ?? "?"}`);
+        log?.info?.(CODE_LOG, `context_peak est=${admission.estimatedTokens} limit=${admission.limit} window=${contextWindow}`);
       }
       if (!admission.allowed) {
         noteContextRejection(rejectionKey);
@@ -1273,14 +1315,18 @@ export class QoderExecutor extends BaseExecutor {
         return {
           response: new Response(
             JSON.stringify(buildErrorBody(400, message, { code: "context_length_exceeded" })),
-            { status: 400, headers: { "Content-Type": "application/json" } },
+            { status: 400, headers: { "Content-Type": "application/json", ...CONTEXT_OVERFLOW_HEADERS } },
           ),
           url,
           headers: {},
           transformedBody: body,
         };
       }
+      // The request fits and is going upstream - clear the rejection streak so a
+      // later overflow starts counting from zero instead of inheriting this one.
+      clearContextRejections(rejectionKey);
     } catch (err) {
+
       // Never let the guard break a request it cannot evaluate.
       log?.warn?.("QODER", `context admission skipped: ${err.message}`);
     }

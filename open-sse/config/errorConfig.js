@@ -117,6 +117,20 @@ export const CODEX_ERROR_CODES = Object.freeze({
   INVALID_PROMPT: "invalid_prompt",
 });
 
+/**
+ * Internal marker for context-overflow responses.
+ *
+ * An executor that rejects a prompt for exceeding the context window sets this
+ * header so chatCore can re-shape the response for Responses-API clients. Codex
+ * only recognises `context_length_exceeded` inside an SSE `response.failed`
+ * event (codex-api/src/sse/responses.rs); a bare HTTP 400 JSON body maps to a
+ * generic InvalidRequest that is explicitly NOT retryable, so the client gives
+ * up instead of compacting. The header never reaches the client - chatCore
+ * strips it when it rewrites the body.
+ */
+export const CONTEXT_OVERFLOW_HEADER = "x-9router-context-overflow";
+export const CONTEXT_OVERFLOW_HEADERS = Object.freeze({ [CONTEXT_OVERFLOW_HEADER]: "1" });
+
 /** Upper bound applied to any retry hint we hand to a client (spec §11.4). */
 export const RATE_LIMIT_RETRY_AFTER_CAP_MS = 120000;
 

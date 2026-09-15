@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { buildCodexCatalogEntries, buildCodexModelsCache, isCodexModelsCacheFresh, mergeCodexCatalogs } from "../../src/lib/qoder/codexCatalog.js";
+import { QODER_CONTEXT_WINDOW } from "../../src/shared/services/codexCompat.js";
 
 // Fields Codex's ModelInfo deserializer requires (nullable ones must be present).
 const REQUIRED_KEYS = [
@@ -51,12 +52,24 @@ describe("Codex model catalog contract", () => {
     }
   });
 
-  it("advertises the real window and a compact threshold below it", () => {
+  it("advertises the unified window and a compact threshold below it", () => {
     const flash = models.find((m) => m.slug === "DeepSeek-Flash");
-    expect(flash.context_window).toBe(1000000);
-    expect(flash.max_context_window).toBe(1000000);
-    expect(flash.auto_compact_token_limit).toBe(500000);
+    expect(flash.context_window).toBe(QODER_CONTEXT_WINDOW);
+    expect(flash.max_context_window).toBe(QODER_CONTEXT_WINDOW);
+    expect(flash.auto_compact_token_limit).toBe(900000);
     expect(flash.effective_context_window_percent).toBe(100);
+  });
+
+  it("describes every qoder model with the same window, whatever the upstream reported", () => {
+    // The fixture deliberately carries the upstream's inconsistent values
+    // (DeepSeek-Flash 1M, Lite/Auto 200k). Codex compacts at the smaller of the
+    // advertised window and the compaction limit, so a per-model value here would
+    // silently cap sessions well below the window these models actually serve.
+    for (const model of models) {
+      expect(model.context_window, `${model.slug} window`).toBe(QODER_CONTEXT_WINDOW);
+      expect(model.max_context_window, `${model.slug} max window`).toBe(QODER_CONTEXT_WINDOW);
+      expect(model.auto_compact_token_limit, `${model.slug} compact limit`).toBe(900000);
+    }
   });
 
   it("maps reasoning and vision per model", () => {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createDisconnectAwareStream } from "../../open-sse/utils/streamHandler.js";
-import { buildAbortedResponsesTerminalBytes } from "../../open-sse/utils/responsesStreamHelpers.js";
+import { buildAbortedResponsesTerminalBytes, buildContextOverflowResponsesFrame } from "../../open-sse/utils/responsesStreamHelpers.js";
 
 // Minimal stream controller stub
 function makeController() {
@@ -68,5 +68,29 @@ describe("Responses abort terminal synthesis", () => {
     const text = await readAll(out);
     expect(text).not.toContain("response.failed");
     expect(text).not.toContain("[DONE]");
+  });
+});
+
+describe("context overflow frame for Responses clients", () => {
+  it("carries the exact code and event Codex matches on", () => {
+    // codex-api/src/sse/responses.rs only recognises context_length_exceeded
+    // inside a response.failed event; as an HTTP 400 JSON body the same error
+    // maps to a generic InvalidRequest that is explicitly not retryable, so the
+    // turn dies instead of auto-compacting. This frame is what makes the client
+    // shrink its own context and retry.
+    const frame = buildContextOverflowResponsesFrame("qoder/dfmodel: maximum context length exceeded (estimated 912345 tokens, limit 900000).");
+    expect(frame).toContain("event: response.failed");
+    const payload = JSON.parse(frame.split("data: ")[1].trim());
+    expect(payload.type).toBe("response.failed");
+    expect(payload.response.status).toBe("failed");
+    expect(payload.response.error.code).toBe("context_length_exceeded");
+    expect(payload.response.error.message).toContain("maximum context length");
+  });
+
+  it("carries no assistant content, so a compaction trigger cannot pollute history", () => {
+    const frame = buildContextOverflowResponsesFrame("too long");
+    expect(frame).not.toContain("output_text");
+    expect(frame).not.toContain("output_item");
+    expect(frame).not.toContain("summary_text");
   });
 });

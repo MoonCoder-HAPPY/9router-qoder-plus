@@ -1,5 +1,6 @@
 // Helpers for OpenAI Responses API streaming termination + event framing
 import { FORMATS } from "../translator/formats.js";
+import { CODEX_ERROR_CODES } from "../config/errorConfig.js";
 import { formatSSE } from "./streamHelpers.js";
 
 // Responses API events that signal the stream has reached a terminal state
@@ -48,3 +49,36 @@ export function formatIncompleteOpenAIResponsesStreamFailure() {
     }
   }, FORMATS.OPENAI_RESPONSES);
 }
+
+/**
+ * Announce a context-window overflow the way Codex expects it.
+ *
+ * Codex only recognises `context_length_exceeded` inside an SSE `response.failed`
+ * event (codex-api/src/sse/responses.rs -> is_context_window_error). The same
+ * error delivered as an HTTP 400 JSON body is mapped to a generic
+ * InvalidRequest, which `is_retryable()` answers false for, so the turn dies
+ * instead of auto-compacting. Answering 200 + this frame is what lets the
+ * client compact losslessly and retry the prompt by itself.
+ *
+ * The frame carries no assistant content on purpose: a compaction trigger is
+ * not a failed answer, and putting text in the history would pollute the very
+ * context we are asking the client to shrink.
+ */
+export function buildContextOverflowResponsesFrame(message, { id = null } = {}) {
+  return formatSSE({
+    event: "response.failed",
+    data: {
+      type: "response.failed",
+      response: {
+        id: id || `resp_${Date.now()}`,
+        status: "failed",
+        error: {
+          type: "invalid_request_error",
+          code: CODEX_ERROR_CODES.CONTEXT_LENGTH_EXCEEDED,
+          message,
+        },
+      },
+    },
+  }, FORMATS.OPENAI_RESPONSES);
+}
+

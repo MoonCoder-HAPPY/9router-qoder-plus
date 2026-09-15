@@ -11,7 +11,14 @@
  * `context_length_exceeded` so Codex compacts losslessly and retries. No
  * upstream call is made and no tokens are billed for the rejected attempt.
  *
- * The estimator is deliberately pessimistic (spec: "宁可早压，不可晚压").
+ * The estimator aims at the real token count rather than erring high on
+ * purpose. The first version used 1.7 tokens per CJK character and 0.4 per
+ * ASCII character, which measured 1.58x the upstream's own prompt counts
+ * across 56 production samples - so a 500k line fired at ~316k real tokens and
+ * cut sessions far below the window they were configured for. The coefficients
+ * below are that measurement scaled back to parity; SAFETY_FACTOR still adds a
+ * deliberate margin on top, so an over-estimate cannot be a hard rejection
+ * until the request genuinely reaches the advertised threshold.
  */
 
 const CJK_PATTERN = /[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]/g;
@@ -26,10 +33,19 @@ export function estimateTokens(value) {
   if (!text) return 0;
   const cjk = (text.match(CJK_PATTERN) || []).length;
   const rest = Math.max(0, text.length - cjk);
-  return Math.ceil(cjk * 1.7 + rest * 0.4) + 8;
+  return Math.ceil(cjk * 1.2 + rest * 0.28) + 8;
 }
 
-/** Estimate a full chat request, including tool schemas and the answer budget. */
+/**
+ * Estimate the input side of a chat request: system prompt, every message,
+ * tool call payloads and the tool schemas themselves.
+ *
+ * The answer budget (`max_tokens`) is deliberately excluded. Upstreams cap the
+ * *input* they accept, and Codex asks for 64k of output on every turn - adding
+ * it would move a 900k input threshold to ~836k and compact long before the
+ * window is actually exhausted, which is the failure mode this module exists to
+ * prevent.
+ */
 export function estimateRequestTokens(body) {
   if (!body || typeof body !== "object") return 0;
   let total = estimateTokens(body.system || "");
@@ -38,7 +54,6 @@ export function estimateRequestTokens(body) {
     if (message?.tool_calls) total += estimateTokens(message.tool_calls) + 6;
   }
   if (body.tools) total += estimateTokens(body.tools);
-  if (Number.isFinite(Number(body.max_tokens))) total += Number(body.max_tokens);
   return Math.ceil(total * SAFETY_FACTOR);
 }
 

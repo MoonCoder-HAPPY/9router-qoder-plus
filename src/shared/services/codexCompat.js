@@ -8,8 +8,22 @@
  * We therefore keep the window truthful but pull the compaction threshold
  * below it, so Codex compacts losslessly before the upstream rejects the call.
  *
+ * Qoder's per-model `max_input_tokens` is not trustworthy: it reports 180k for
+ * models that serve a 1M window, and the values drift between catalog fetches.
+ * Every Qoder model is therefore described with one window
+ * (`QODER_CONTEXT_WINDOW`) and one compaction threshold (90% of it), so the
+ * client and this router always agree on where compaction starts. The upstream
+ * value is still forwarded verbatim inside the provider request — it only stops
+ * being used for planning.
+ *
  * Nothing else in the codebase may hardcode these numbers (spec.md §15.1).
  */
+
+/**
+ * Unified context window for every Qoder model. See the note above for why the
+ * upstream per-model `max_input_tokens` is deliberately not used here.
+ */
+export const QODER_CONTEXT_WINDOW = 1_000_000;
 
 export const FIRST_TOKEN_TIMEOUT_FALLBACK = Object.freeze({
   ACCOUNT_THEN_BUDGET: "account-then-budget",
@@ -18,9 +32,15 @@ export const FIRST_TOKEN_TIMEOUT_FALLBACK = Object.freeze({
 });
 
 export const CODEX_COMPAT_DEFAULTS = Object.freeze({
-  autoCompactRatio: 0.5,
+  // 90% of QODER_CONTEXT_WINDOW (1M) => a 900K compaction line. Codex validates
+  // the advertised limit and compacts there, so the client and this router share
+  // one threshold instead of disagreeing by hundreds of thousands of tokens.
+  autoCompactRatio: 0.9,
   autoCompactMin: 120000,
-  autoCompactMax: 500000,
+  // Must stay at or above the largest window we advertise, otherwise the bound
+  // would silently pull the 900K line back down (the old 500K value did exactly
+  // that and compacted 1M models at half their usable window).
+  autoCompactMax: 1_000_000,
   proactiveContextGuard: true,
   autoContinueMax: 1,
   firstTokenTimeoutFallback: FIRST_TOKEN_TIMEOUT_FALLBACK.ACCOUNT_THEN_BUDGET,
@@ -68,8 +88,12 @@ export function normalizeCodexCompatSettings(input = {}) {
 
 /**
  * Auto-compaction threshold advertised to Codex for one model.
- * Never exceeds the model's real window, even when the configured minimum is
- * larger than a small context model.
+ * Never exceeds the given window, even when the configured minimum is larger
+ * than a small context model.
+ *
+ * Callers describing a Qoder model pass `QODER_CONTEXT_WINDOW` rather than the
+ * upstream's own `max_input_tokens`, so every Qoder model advertises the same
+ * 900K line and Codex compacts there instead of at a stale per-model number.
  */
 export function computeAutoCompactLimit(contextWindow, settings = CODEX_COMPAT_DEFAULTS) {
   const window = Number(contextWindow);

@@ -9,6 +9,8 @@ import { createRequestLogger } from "../utils/requestLogger.js";
 import { getModelTargetFormat, getModelStrip, getModelUpstreamId, getModelType, PROVIDER_ID_TO_ALIAS } from "../config/providerModels.js";
 import { PROVIDERS } from "../config/providers.js";
 import { createErrorResult, parseUpstreamError, formatProviderError } from "../utils/error.js";
+import { CONTEXT_OVERFLOW_HEADER } from "../config/errorConfig.js";
+import { buildContextOverflowResponsesFrame } from "../utils/responsesStreamHelpers.js";
 import { HTTP_STATUS, TOKEN_SAVER_HEADER } from "../config/runtimeConfig.js";
 import { handleBypassRequest } from "../utils/bypassHandler.js";
 import { trackPendingRequest, appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
@@ -394,6 +396,33 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       log.errorLine(reqTag, "✗", `ERROR ${statusCode} · ${provider}/${model} · ${Date.now() - requestStartTime}ms${urlStr}\n    ${errMsg}`);
     }
     reqLogger.logError(new Error(message), finalBody || translatedBody);
+
+    // Context overflow is the one upstream failure the client can fix by itself.
+    // Codex only recognises `context_length_exceeded` inside an SSE `response.failed`
+    // event; as an HTTP 400 JSON body it maps to a non-retryable InvalidRequest and
+    // the turn dies without ever compacting. Re-shape it as a stream for
+    // Responses-API clients so their auto-compaction can do its job. The status we
+    // report internally stays the real one, so logging, cooldowns and the
+    // failed-request filter in the dashboard are unaffected.
+    if (providerResponse.headers?.get?.(CONTEXT_OVERFLOW_HEADER) === "1") {
+      if (sourceFormat === FORMATS.OPENAI_RESPONSES && stream) {
+        return {
+          success: false,
+          status: statusCode,
+          error: message,
+          resetsAtMs,
+          response: new Response(buildContextOverflowResponsesFrame(errMsg), {
+            status: 200,
+            headers: {
+              "Content-Type": "text/event-stream",
+              "Cache-Control": "no-cache",
+              "Access-Control-Allow-Origin": "*",
+            },
+          }),
+        };
+      }
+    }
+
     return createErrorResult(statusCode, errMsg, resetsAtMs);
   }
 

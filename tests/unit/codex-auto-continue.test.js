@@ -81,6 +81,58 @@ describe("auto-continue budget from settings", () => {
     await drain(wrapQoderSSE(danglingTurn(), "qoder/dfmodel", { continueFetch, hasTools: false, maxContinuations: 1 }));
     expect(continueFetch).not.toHaveBeenCalled();
   });
+
+  it("holds the first turn's finish_reason back until continuation is ruled out", async () => {
+    // Codex ends the turn - and aborts the request it is reading - the instant it
+    // sees a finish_reason. Letting the first turn's `stop` through before asking
+    // upstream for the rest is what made the continuation die with "This operation
+    // was aborted" and left answers truncated mid-sentence.
+    let framesSeen = 0;
+    let framesAtContinueStart = null;
+    const continueFetch = vi.fn(async () => {
+      framesAtContinueStart = framesSeen;
+      return continuationTurn();
+    });
+    const wrapped = wrapQoderSSE(danglingTurn(), "qoder/dfmodel", { continueFetch, hasTools: true, maxContinuations: 1 });
+    const reader = wrapped.body.getReader();
+    const dec = new TextDecoder();
+    let out = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      out += dec.decode(value, { stream: true });
+      framesSeen = (out.match(/finish_reason":\s*"stop"/g) || []).length;
+    }
+    // The first turn's terminal frame was withheld until the continuation began.
+    expect(continueFetch).toHaveBeenCalledTimes(1);
+    expect(framesAtContinueStart).toBe(0);
+    // The spliced continuation is what the client ends up seeing.
+    expect(out).toContain("call_cont");
+    expect(out).toContain("tool_calls");
+    expect(out).not.toMatch(/finish_reason":\s*"stop"/);
+  });
+
+  it("still emits the terminal frame when the turn is a real answer", async () => {
+    // A completed answer must end exactly as before: nothing is withheld when no
+    // continuation applies, so the client closes the turn normally.
+    const finishTurn = () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(enc.encode(envelope(chunk({ content: "All done. Here is the summary." }))));
+            controller.enqueue(enc.encode(envelope(chunk({}, "stop"))));
+            controller.enqueue(enc.encode(envelope("[DONE]")));
+            controller.close();
+          },
+        }),
+        { status: 200 },
+      );
+    const continueFetch = vi.fn(async () => continuationTurn());
+    const out = await drain(wrapQoderSSE(finishTurn(), "qoder/dfmodel", { continueFetch, hasTools: true, maxContinuations: 1 }));
+    expect(continueFetch).not.toHaveBeenCalled();
+    expect(out).toMatch(/finish_reason":\s*"stop"/);
+    expect(out).toContain("[DONE]");
+  });
 });
 
 describe("auto-continue on the post-queue path", () => {

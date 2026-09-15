@@ -20,16 +20,16 @@ vi.mock("../../open-sse/utils/proxyFetch.js", () => ({
 const fetchState = vi.hoisted(() => ({ calls: 0 }));
 const codexCompatMock = vi.hoisted(() => ({
   settings: {
-    autoCompactRatio: 0.5,
+    autoCompactRatio: 0.9,
     autoCompactMin: 120000,
-    autoCompactMax: 500000,
+    autoCompactMax: 1000000,
     proactiveContextGuard: true,
     autoContinueMax: 1,
     firstTokenTimeoutFallback: "account-then-budget",
     rateLimitRetryAfterCapMs: 120000,
   },
 }));
-vi.mock("@/shared/services/codexCompat.js", async (importOriginal) => {
+vi.mock("../../src/shared/services/codexCompat.js", async (importOriginal) => {
   const actual = await importOriginal();
   return {
     ...actual,
@@ -76,9 +76,9 @@ afterEach(() => {
 describe("proactive context admission", () => {
   it("rejects an oversized prompt before any upstream call", async () => {
     const executor = new QoderExecutor();
-    // 400k CJK chars ≈ 700k tokens — well past the 500k compaction threshold.
+    // 800k CJK chars ≈ 1.06M tokens — past the 900k compaction threshold.
     const metrics = {};
-    const result = await executor.execute({ model: "qoder/dfmodel", body: bigBody(400000), stream: true, credentials, signal: null, log: null, metrics });
+    const result = await executor.execute({ model: "qoder/dfmodel", body: bigBody(800000), stream: true, credentials, signal: null, log: null, metrics });
     expect(metrics.compactionTriggers).toBe(1);
     expect(metrics.admissionRejectReason).toBe("context-window");
     expect(result.response.status).toBe(400);
@@ -98,10 +98,10 @@ describe("proactive context admission", () => {
   it("stops rejecting after the cap so a retrying client is never trapped", async () => {
     const executor = new QoderExecutor();
     for (let i = 0; i < 3; i += 1) {
-      const rejected = await executor.execute({ model: "qoder/dfmodel", body: bigBody(400000), stream: true, credentials, signal: null, log: null });
+      const rejected = await executor.execute({ model: "qoder/dfmodel", body: bigBody(800000), stream: true, credentials, signal: null, log: null });
       expect(rejected.response.status).toBe(400);
     }
-    const fourth = await executor.execute({ model: "qoder/dfmodel", body: bigBody(400000), stream: true, credentials, signal: null, log: null });
+    const fourth = await executor.execute({ model: "qoder/dfmodel", body: bigBody(800000), stream: true, credentials, signal: null, log: null });
     expect(fourth.response.status).toBe(200);
     expect(fetchState.calls).toBe(1);
   });
@@ -109,7 +109,7 @@ describe("proactive context admission", () => {
   it("behaves exactly as before when the guard is switched off", async () => {
     codexCompatMock.settings.proactiveContextGuard = false;
     const executor = new QoderExecutor();
-    const result = await executor.execute({ model: "qoder/dfmodel", body: bigBody(400000), stream: true, credentials, signal: null, log: null });
+    const result = await executor.execute({ model: "qoder/dfmodel", body: bigBody(800000), stream: true, credentials, signal: null, log: null });
     expect(result.response.status).toBe(200);
     expect(fetchState.calls).toBe(1);
   });
