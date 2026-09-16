@@ -46,7 +46,7 @@ import {
   recentContextRejections,
   clearContextRejections,
 } from "../utils/contextAdmission.js";
-import { QODER_AUTO_COMPACT_TOKEN_LIMIT, QODER_CONTEXT_WINDOW } from "../../src/shared/services/codexCompat.js";
+import { QODER_CONTEXT_WINDOW } from "../../src/shared/services/codexCompat.js";
 
 // ============ 9router-fix: Qoder queue-aware retry patch ============
 // Qoder rate-limits by returning HTTP 403 with a nested body containing
@@ -1295,10 +1295,10 @@ export class QoderExecutor extends BaseExecutor {
       return { response: fakeResp, url, headers: {}, transformedBody: body };
     }
 
-    // Proactive context admission: when the prompt is already past the compaction
-    // threshold Codex uses, answer with context_length_exceeded straight away. The
-    // client then compacts losslessly and retries, instead of burning a slow upstream
-    // call that can only end in "maximum context length".
+    // Proactive hard-window admission. Codex receives the lower 900K compaction
+    // threshold from the model catalog; keeping the server guard at the fixed 1M
+    // input window leaves room for client-side compaction and tokenizer differences
+    // instead of turning the soft compaction line into an immediate HTTP 400.
     if (body?._compact !== true) {
       try {
         // One window for every Qoder model: the upstream `max_input_tokens` says
@@ -1310,7 +1310,6 @@ export class QoderExecutor extends BaseExecutor {
           estimatedTokens: estimateRequestTokens(body),
           contextWindow,
           settings: { proactiveContextGuard: true },
-          autoCompactLimit: QODER_AUTO_COMPACT_TOKEN_LIMIT,
           recentRejections: recentContextRejections(rejectionKey),
         });
         if (metrics && admission.limit) {

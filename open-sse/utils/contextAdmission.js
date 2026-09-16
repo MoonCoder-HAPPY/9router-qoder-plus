@@ -7,8 +7,9 @@
  * hard "maximum context length" 400 after tens of seconds of upstream work.
  *
  * This module estimates the prompt locally and, when it is already past the
- * model's auto-compaction threshold, lets the router answer immediately with
- * `context_length_exceeded` so Codex compacts losslessly and retries. No
+ * configured admission limit, lets the router answer immediately with
+ * `context_length_exceeded`. Callers should use the provider's hard input
+ * window here; the lower auto-compaction threshold belongs to the client. No
  * upstream call is made and no tokens are billed for the rejected attempt.
  *
  * The estimator aims at the real token count rather than erring high on
@@ -26,6 +27,10 @@ const CJK_PATTERN = /[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900
 const REJECTION_WINDOW_MS = 60000;
 const MAX_CONSECUTIVE_REJECTIONS = 3;
 const SAFETY_FACTOR = 1.1;
+// Inline images are decoded by the vision model; their base64 transport bytes are
+// not prompt text. Keep a deliberately generous per-image budget so the guard
+// accounts for vision tokens without treating a multi-megabyte data URI as text.
+const IMAGE_TOKEN_ESTIMATE = 8192;
 
 /** Conservative token estimate for a string (or JSON-serialisable value). */
 export function estimateTokens(value) {
@@ -34,6 +39,31 @@ export function estimateTokens(value) {
   const cjk = (text.match(CJK_PATTERN) || []).length;
   const rest = Math.max(0, text.length - cjk);
   return Math.ceil(cjk * 1.2 + rest * 0.28) + 8;
+}
+
+function isImageContentPart(part) {
+  return part?.type === "image_url" || part?.type === "input_image";
+}
+
+/** Estimate model-visible message content rather than its transport encoding. */
+export function estimateContentTokens(content) {
+  if (!Array.isArray(content)) return estimateTokens(content);
+
+  let total = 0;
+  for (const part of content) {
+    if (isImageContentPart(part)) {
+      total += IMAGE_TOKEN_ESTIMATE;
+      continue;
+    }
+    if (typeof part?.text === "string") {
+      total += estimateTokens(part.text);
+      continue;
+    }
+    if (typeof part === "string" || typeof part === "number" || typeof part === "boolean") {
+      total += estimateTokens(part);
+    }
+  }
+  return total;
 }
 
 /**
@@ -50,8 +80,9 @@ export function estimateRequestTokens(body) {
   if (!body || typeof body !== "object") return 0;
   let total = estimateTokens(body.system || "");
   for (const message of Array.isArray(body.messages) ? body.messages : []) {
-    total += estimateTokens(message?.content) + 6;
+    total += estimateContentTokens(message?.content) + 6;
     if (message?.tool_calls) total += estimateTokens(message.tool_calls) + 6;
+    if (message?.reasoning_content) total += estimateTokens(message.reasoning_content) + 6;
   }
   if (body.tools) total += estimateTokens(body.tools);
   return Math.ceil(total * SAFETY_FACTOR);

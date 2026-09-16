@@ -4,6 +4,7 @@ vi.mock("../../open-sse/services/qoderModels.js", () => ({
   getQoderModelConfig: vi.fn(async () => ({
     key: "dfmodel",
     is_reasoning: true,
+    is_vl: true,
     max_input_tokens: 1000000,
     max_output_tokens: 64000,
   })),
@@ -55,6 +56,23 @@ const bigBody = (chars) => ({
   max_tokens: 1000,
 });
 
+const imageBody = (base64Chars) => ({
+  model: "qoder/dfmodel",
+  messages: [
+    {
+      role: "user",
+      content: [
+        {
+          type: "image_url",
+          image_url: { url: `data:image/png;base64,${"A".repeat(base64Chars)}` },
+        },
+        { type: "text", text: "inspect this screenshot" },
+      ],
+    },
+  ],
+  max_tokens: 1000,
+});
+
 let fetchCalls = 0;
 const originalFetch = global.fetch;
 
@@ -101,6 +119,46 @@ describe("proactive context admission", () => {
     const result = await executor.execute({ model: "qoder/dfmodel", body: bigBody(50), stream: true, credentials, signal: null, log: null });
     expect(result.response.status).toBe(200);
     expect(fetchState.calls).toBe(1);
+  });
+
+  it("does not count inline image bytes as ordinary text tokens", async () => {
+    const executor = new QoderExecutor();
+    const metrics = {};
+    const result = await executor.execute({
+      model: "qoder/dfmodel",
+      body: imageBody(3_000_000),
+      stream: true,
+      credentials,
+      signal: null,
+      log: null,
+      metrics,
+    });
+
+    expect(result.response.status).toBe(200);
+    expect(fetchState.calls).toBe(1);
+    expect(metrics.contextPeakEstimate).toBeLessThan(20_000);
+  });
+
+  it("keeps the client compaction band below the hard context window admissible", async () => {
+    const executor = new QoderExecutor();
+    const metrics = {};
+    const result = await executor.execute({
+      model: "qoder/dfmodel",
+      // About 950k estimated tokens: over the client's 900k compact line but
+      // still below Qoder's fixed 1M hard input window.
+      body: bigBody(720_000),
+      stream: true,
+      credentials,
+      signal: null,
+      log: null,
+      metrics,
+    });
+
+    expect(result.response.status).toBe(200);
+    expect(fetchState.calls).toBe(1);
+    expect(metrics.contextPeakEstimate).toBeGreaterThan(900_000);
+    expect(metrics.contextPeakEstimate).toBeLessThan(1_000_000);
+    expect(metrics.contextLimit).toBe(1_000_000);
   });
 
   it("stops rejecting after the cap so a retrying client is never trapped", async () => {
