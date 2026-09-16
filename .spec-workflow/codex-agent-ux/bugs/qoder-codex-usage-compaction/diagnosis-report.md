@@ -91,16 +91,50 @@ translator. They verify the actual client control flow, NOT a paid 900K-token
 Qoder inference or the semantic quality of a real long-history summary.
 No original conversation was deleted, rewritten or replayed to another provider.
 
-Production validation and deployment are recorded separately after release.
 Large single additions that exceed the real upstream window in one step, and
 upstreams that omit usage, remain separate limitations; this fix does not claim
 that every true upstream context error can recover automatically.
 
 Temporary command logs: OS temp/9router-compaction-{regression,e2e,build}.log.
-E2E homes are removed after each run. No temporary production instrumentation
-or credentials are committed. An initial test-only Windows directory lock and
-parameterized-case bug were corrected before the successful final run.
+Successful E2E homes are removed after each run. One initial failed run left
+OS temp/9router-codex-compact-ojdj5M (synthetic test sessions and SQLite files);
+manual cleanup was blocked by the tool policy, so it remains outside the repo.
+No temporary production instrumentation or credentials are committed. An
+initial test-only Windows directory lock and parameterized-case bug were
+corrected before the successful final run. ESLint passed on changed logic/tests.
 
 Prevention: keep the opt-in real Codex executable test in release validation.
 Mocks that only submit compaction_trigger cannot test whether Codex initiates
 compaction. Do not count context errors as successful compactions.
+
+## Production delivery
+
+Code commit: 47e46936a5b25a3cbc73f466b453a4882e3cb1a4, pushed to origin/main.
+Built from git archive of this commit, not the dirty working directory.
+Released 2026-09-17 around 00:28 Asia/Shanghai to 175.178.223.16:20128.
+Image: 9router:qoder-compaction-usage-47e4693; revision label: 47e4693.
+Container: 9router, restart count 0 after smoke verification.
+
+Rollback container: 9router-before-compaction-47e4693-20260917, preserving
+9router:qoder-image-context-fix-2137d06. Existing v39c and v39b rollback
+containers/images remain untouched. No Docker prune was run.
+Stopped-container database backup: /home/ubuntu/deploy/db-before-47e4693-20260917
+(directory mode 700). Existing environment and data mount were preserved.
+No schema change or original-history mutation was made by this patch.
+
+Public GET /api/health returned {"ok":true} after deployment. A short isolated
+production session then used the real Qoder dfmodel for three requests:
+
+| Step | Real input | Real output | Total | Assertion |
+| --- | ---: | ---: | ---: | --- |
+| Ordinary response | 49 | 50 | 99 | Responses completion contains real usage |
+| Explicit compaction_trigger | 119 | 548 | 667 | Real model returns compaction item |
+| Continue using compaction item | 139 | 36 | 175 | Original random marker recovered |
+
+Result: PRODUCTION_SMOKE_OK. This real-provider smoke complements (does not
+replace) the installed-Codex automatic-trigger tests using synthetic 900K usage.
+The user's 524K-token history was NOT replayed as a paid 900K-token test.
+
+Remote upload archive, deployment script, smoke script and secret environment
+temporary file were removed. Build source/log retained at
+/home/ubuntu/deploy/compaction-47e4693 for this release's diagnostics.
