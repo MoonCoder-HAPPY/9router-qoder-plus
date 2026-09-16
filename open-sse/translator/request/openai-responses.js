@@ -8,6 +8,7 @@ import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
 import { normalizeResponsesInput, splitResponsesFunctionOutput } from "../formats/responsesApi.js";
 import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM } from "../schema/index.js";
+import { RESPONSES_REASONING_HEADER } from "../concerns/reasoning.js";
 import {
   QODER_COMPACTION_PROMPT,
   isQoderCompactionRequest,
@@ -54,7 +55,9 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
   // Extract reasoning text from summary[].text (encrypted_content is continuity-only)
   const extractReasoningText = (item) => {
     if (Array.isArray(item.summary)) {
-      const txt = item.summary.map(s => s?.text || "").filter(Boolean).join("\n");
+      const parts = item.summary.map(s => s?.text || "").filter(Boolean);
+      if (parts[0]?.trim() === RESPONSES_REASONING_HEADER) parts.shift();
+      const txt = parts.join("\n");
       if (txt) return txt;
     }
     if (Array.isArray(item.content)) {

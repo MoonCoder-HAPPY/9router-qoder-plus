@@ -4,6 +4,7 @@ import { initState } from "../../open-sse/translator/index.js";
 import { FORMATS } from "../../open-sse/translator/formats.js";
 import { openaiToOpenAIResponsesResponse } from "../../open-sse/translator/response/openai-responses.js";
 import { openaiResponsesToOpenAIRequest } from "../../open-sse/translator/request/openai-responses.js";
+import { createSSETransformStreamWithLogger } from "../../open-sse/utils/stream.js";
 import {
   buildReasoningEncryptedContent,
   parseReasoningEncryptedContent,
@@ -65,23 +66,64 @@ describe("responses reasoning event contract", () => {
     expect(dataOf(events, "response.output_item.added").some((d) => d.item?.type === "reasoning")).toBe(true);
   });
 
-  it("keeps one summary section with a stable item id and output index", () => {
-    expect(byName(events, "response.reasoning_summary_part.added")).toHaveLength(1);
+  it("streams an expandable reasoning body after a separate status header", () => {
+    const parts = dataOf(events, "response.reasoning_summary_part.added");
+    expect(parts.map((part) => part.summary_index)).toEqual([0, 1]);
     const itemId = dataOf(events, "response.output_item.added").find((d) => d.item?.type === "reasoning").item.id;
     expect(itemId.length).toBeLessThanOrEqual(64);
     for (const d of dataOf(events, "response.reasoning_summary_text.delta")) {
       expect(d.item_id).toBe(itemId);
-      expect(d.summary_index).toBe(0);
+      expect(d.summary_index).toBeGreaterThanOrEqual(0);
     }
+    expect(dataOf(events, "response.reasoning_summary_text.delta").at(-1)?.summary_index).toBe(1);
     const indexes = new Set(dataOf(events, "response.reasoning_summary_text.delta").map((d) => d.output_index));
     expect(indexes.size).toBe(1);
   });
 
   it("closes the reasoning section with the full text and our envelope", () => {
     const done = dataOf(events, "response.output_item.done").find((d) => d.item?.type === "reasoning");
-    expect(done.item.summary).toEqual([{ type: "summary_text", text: "Let me think." }]);
+    expect(done.item.summary).toEqual([
+      { type: "summary_text", text: "**Reasoning**" },
+      { type: "summary_text", text: "Let me think." },
+    ]);
     expect(reasoningEnvelopeMatches(done.item.encrypted_content, "Let me think.")).toBe(true);
-    expect(dataOf(events, "response.reasoning_summary_text.done")[0].text).toBe("Let me think.");
+    expect(dataOf(events, "response.reasoning_summary_text.done").at(-1)?.text).toBe("Let me think.");
+  });
+
+  it("preserves the expandable two-part structure through the complete SSE pipeline", async () => {
+    const raw = [
+      `data: ${JSON.stringify(chunk({ reasoning_content: "Let me " }))}\n\n`,
+      `data: ${JSON.stringify(chunk({ reasoning_content: "think." }))}\n\n`,
+      `data: ${JSON.stringify(chunk({ content: "Answer" }, { finish_reason: "stop" }))}\n\n`,
+      "data: [DONE]\n\n",
+    ].join("");
+    const transform = createSSETransformStreamWithLogger(
+      FORMATS.OPENAI,
+      FORMATS.OPENAI_RESPONSES,
+      "qoder",
+      null,
+      null,
+      "DeepSeek-Flash",
+      null,
+      { input: [{ type: "message", role: "user", content: "question" }] },
+    );
+    const output = await new Response(new Response(raw).body.pipeThrough(transform)).text();
+    const payloads = output
+      .split("\n")
+      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+      .map((line) => JSON.parse(line.slice(6)));
+
+    expect(payloads
+      .filter((event) => event.type === "response.reasoning_summary_part.added")
+      .map((event) => event.summary_index)).toEqual([0, 1]);
+    expect(payloads
+      .filter((event) => event.type === "response.reasoning_summary_text.delta")
+      .map((event) => [event.summary_index, event.delta])).toEqual([
+      [0, "**Reasoning**"],
+      [1, "Let me "],
+      [1, "think."],
+    ]);
+    expect(payloads.some((event) => event.type === "response.completed")).toBe(true);
   });
 });
 
@@ -94,7 +136,14 @@ describe("responses request side keeps only the latest chain of thought", () => 
       { type: "reasoning", summary: [{ type: "summary_text", text: "old reasoning" }], encrypted_content: olderBlob },
       { type: "message", role: "assistant", content: [{ type: "output_text", text: "a1" }] },
       { type: "message", role: "user", content: [{ type: "input_text", text: "q2" }] },
-      { type: "reasoning", summary: [{ type: "summary_text", text: "new reasoning" }], encrypted_content: latestBlob },
+      {
+        type: "reasoning",
+        summary: [
+          { type: "summary_text", text: "**Reasoning**" },
+          { type: "summary_text", text: "new reasoning" },
+        ],
+        encrypted_content: latestBlob,
+      },
       { type: "message", role: "assistant", content: [{ type: "output_text", text: "a2" }] },
       { type: "message", role: "user", content: [{ type: "input_text", text: "q3" }] },
     ],

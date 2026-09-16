@@ -1,5 +1,7 @@
 import { ROLE } from "../schema/index.js";
 
+export const RESPONSES_REASONING_HEADER = "**Reasoning**";
+
 // Build OpenAI delta carrying reasoning_content (optional leading assistant role)
 export function reasoningDelta(text, withRole = false) {
   return withRole

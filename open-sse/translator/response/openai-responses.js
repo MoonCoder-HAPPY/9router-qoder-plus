@@ -7,7 +7,11 @@ import { FORMATS } from "../formats.js";
 import { buildChunk } from "../concerns/chunk.js";
 import { buildUsage } from "../concerns/usage.js";
 import { fallbackToolCallId } from "../concerns/toolCall.js";
-import { reasoningDelta, extractReasoningText } from "../concerns/reasoning.js";
+import {
+  RESPONSES_REASONING_HEADER,
+  reasoningDelta,
+  extractReasoningText,
+} from "../concerns/reasoning.js";
 import { buildReasoningEncryptedContent } from "../concerns/reasoningEnvelope.js";
 import { buildQoderCompactionContent, isQoderCompactionRequest } from "../concerns/qoderCompaction.js";
 import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM, OPENAI_FINISH, MODEL_FALLBACK } from "../schema/index.js";
@@ -207,6 +211,38 @@ function startReasoning(state, emit, idx) {
       summary_index: 0,
       part: { type: RESPONSES_ITEM.SUMMARY_TEXT, text: "" }
     });
+
+    emit("response.reasoning_summary_text.delta", {
+      type: "response.reasoning_summary_text.delta",
+      item_id: state.reasoningId,
+      output_index: state.reasoningIndex,
+      summary_index: 0,
+      delta: RESPONSES_REASONING_HEADER
+    });
+
+    emit("response.reasoning_summary_text.done", {
+      type: "response.reasoning_summary_text.done",
+      item_id: state.reasoningId,
+      output_index: state.reasoningIndex,
+      summary_index: 0,
+      text: RESPONSES_REASONING_HEADER
+    });
+
+    emit("response.reasoning_summary_part.done", {
+      type: "response.reasoning_summary_part.done",
+      item_id: state.reasoningId,
+      output_index: state.reasoningIndex,
+      summary_index: 0,
+      part: { type: RESPONSES_ITEM.SUMMARY_TEXT, text: RESPONSES_REASONING_HEADER }
+    });
+
+    emit("response.reasoning_summary_part.added", {
+      type: "response.reasoning_summary_part.added",
+      item_id: state.reasoningId,
+      output_index: state.reasoningIndex,
+      summary_index: 1,
+      part: { type: RESPONSES_ITEM.SUMMARY_TEXT, text: "" }
+    });
     state.reasoningPartAdded = true;
   }
 }
@@ -218,7 +254,7 @@ function emitReasoningDelta(state, emit, text) {
     type: "response.reasoning_summary_text.delta",
     item_id: state.reasoningId,
     output_index: state.reasoningIndex,
-    summary_index: 0,
+    summary_index: 1,
     delta: text
   });
 }
@@ -231,7 +267,7 @@ function closeReasoning(state, emit) {
       type: "response.reasoning_summary_text.done",
       item_id: state.reasoningId,
       output_index: state.reasoningIndex,
-      summary_index: 0,
+      summary_index: 1,
       text: state.reasoningBuf
     });
 
@@ -239,7 +275,7 @@ function closeReasoning(state, emit) {
       type: "response.reasoning_summary_part.done",
       item_id: state.reasoningId,
       output_index: state.reasoningIndex,
-      summary_index: 0,
+      summary_index: 1,
       part: { type: RESPONSES_ITEM.SUMMARY_TEXT, text: state.reasoningBuf }
     });
 
@@ -249,7 +285,10 @@ function closeReasoning(state, emit) {
       item: {
         id: state.reasoningId,
         type: RESPONSES_ITEM.REASONING,
-        summary: [{ type: RESPONSES_ITEM.SUMMARY_TEXT, text: state.reasoningBuf }],
+        summary: [
+          { type: RESPONSES_ITEM.SUMMARY_TEXT, text: RESPONSES_REASONING_HEADER },
+          { type: RESPONSES_ITEM.SUMMARY_TEXT, text: state.reasoningBuf },
+        ],
         // Codex round-trips this opaque blob on the next turn (store:false continuity).
         encrypted_content: buildReasoningEncryptedContent({ model: state.model, text: state.reasoningBuf })
       }
