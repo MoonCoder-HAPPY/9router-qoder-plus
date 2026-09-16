@@ -57,12 +57,10 @@ export function formatIncompleteOpenAIResponsesStreamFailure() {
  * event (codex-api/src/sse/responses.rs -> is_context_window_error). The same
  * error delivered as an HTTP 400 JSON body is mapped to a generic
  * InvalidRequest, which `is_retryable()` answers false for, so the turn dies
- * instead of auto-compacting. Answering 200 + this frame is what lets the
- * client compact losslessly and retry the prompt by itself.
+ * with a generic error. This frame preserves the error classification, but does
+ * not itself make Codex compact and retry; automatic compaction uses usage.
  *
- * The frame carries no assistant content on purpose: a compaction trigger is
- * not a failed answer, and putting text in the history would pollute the very
- * context we are asking the client to shrink.
+ * The frame carries no assistant content so errors cannot pollute model history.
  */
 export function buildContextOverflowResponsesFrame(message, { id = null } = {}) {
   return formatSSE({

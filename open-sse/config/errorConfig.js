@@ -104,7 +104,7 @@ export const COOLDOWN_MS = {
 
 // ── Codex-facing error semantics ────────────────────────────────────────────
 // Codex only reacts to a small set of `error.code` values (codex-api/src/sse/
-// responses.rs): it auto-compacts on context_length_exceeded, backs off on
+// responses.rs): it classifies context_length_exceeded, backs off on
 // rate_limit_exceeded (parsing "try again in <n> seconds" out of the message),
 // and treats everything else as a generic retryable stream error. Emitting the
 // right code is therefore the difference between "self-healing" and "the user
@@ -125,7 +125,8 @@ export const CODEX_ERROR_CODES = Object.freeze({
  * only recognises `context_length_exceeded` inside an SSE `response.failed`
  * event (codex-api/src/sse/responses.rs); a bare HTTP 400 JSON body maps to a
  * generic InvalidRequest that is explicitly NOT retryable, so the client gives
- * up instead of compacting. The header never reaches the client - chatCore
+ * up with a generic error. Classification does not trigger automatic compaction:
+ * Codex uses response.completed.usage for that. The header never reaches the client - chatCore
  * strips it when it rewrites the body.
  */
 export const CONTEXT_OVERFLOW_HEADER = "x-9router-context-overflow";

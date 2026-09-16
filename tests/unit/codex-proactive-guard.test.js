@@ -92,18 +92,16 @@ afterEach(() => {
 });
 
 describe("proactive context admission", () => {
-  it("rejects an oversized prompt before any upstream call", async () => {
+  it("does not reject a request solely because a heuristic exceeds 1M", async () => {
     const executor = new QoderExecutor();
     // 800k CJK chars ≈ 1.06M tokens — past the 900k compaction threshold.
     const metrics = {};
     const result = await executor.execute({ model: "qoder/dfmodel", body: bigBody(800000), stream: true, credentials, signal: null, log: null, metrics });
-    expect(metrics.compactionTriggers).toBe(1);
-    expect(metrics.admissionRejectReason).toBe("context-window");
-    expect(result.response.status).toBe(400);
-    const payload = await result.response.json();
-    expect(payload.error.code).toBe("context_length_exceeded");
-    expect(payload.error.message).toContain("maximum context length");
-    expect(fetchState.calls).toBe(0);
+    expect(metrics.contextPeakEstimate).toBeGreaterThan(1_000_000);
+    expect(metrics.compactionTriggers).toBeUndefined();
+    expect(metrics.admissionRejectReason).toBeUndefined();
+    expect(result.response.status).toBe(200);
+    expect(fetchState.calls).toBe(1);
   });
 
   it("allows an oversized compact task through so the client can actually shrink history", async () => {
@@ -161,38 +159,38 @@ describe("proactive context admission", () => {
     expect(metrics.contextLimit).toBe(1_000_000);
   });
 
-  it("stops rejecting after the cap so a retrying client is never trapped", async () => {
+  it("does not require three failed retries to release an overestimated request", async () => {
     const executor = new QoderExecutor();
     for (let i = 0; i < 3; i += 1) {
       const rejected = await executor.execute({ model: "qoder/dfmodel", body: bigBody(800000), stream: true, credentials, signal: null, log: null, clientSessionId: "retry-session" });
-      expect(rejected.response.status).toBe(400);
+      expect(rejected.response.status).toBe(200);
     }
     const fourth = await executor.execute({ model: "qoder/dfmodel", body: bigBody(800000), stream: true, credentials, signal: null, log: null, clientSessionId: "retry-session" });
     expect(fourth.response.status).toBe(200);
-    expect(fetchState.calls).toBe(1);
+    expect(fetchState.calls).toBe(4);
   });
 
-  it("keeps rejection caps isolated between client sessions", async () => {
+  it("does not change admission based on another session's retries", async () => {
     const executor = new QoderExecutor();
     for (let i = 0; i < 3; i += 1) {
       const rejected = await executor.execute({ model: "qoder/dfmodel", body: bigBody(800000), stream: true, credentials, signal: null, log: null, clientSessionId: "session-a" });
-      expect(rejected.response.status).toBe(400);
+      expect(rejected.response.status).toBe(200);
     }
 
     const otherSession = await executor.execute({ model: "qoder/dfmodel", body: bigBody(800000), stream: true, credentials, signal: null, log: null, clientSessionId: "session-b" });
-    expect(otherSession.response.status).toBe(400);
-    expect(fetchState.calls).toBe(0);
+    expect(otherSession.response.status).toBe(200);
+    expect(fetchState.calls).toBe(4);
 
     const releasedSession = await executor.execute({ model: "qoder/dfmodel", body: bigBody(800000), stream: true, credentials, signal: null, log: null, clientSessionId: "session-a" });
     expect(releasedSession.response.status).toBe(200);
-    expect(fetchState.calls).toBe(1);
+    expect(fetchState.calls).toBe(5);
   });
 
-  it("does not let persisted settings disable the fixed Qoder guard", async () => {
+  it("keeps diagnostic estimates non-blocking regardless of old guard settings", async () => {
     codexCompatMock.settings.proactiveContextGuard = false;
     const executor = new QoderExecutor();
     const result = await executor.execute({ model: "qoder/dfmodel", body: bigBody(800000), stream: true, credentials, signal: null, log: null });
-    expect(result.response.status).toBe(400);
-    expect(fetchState.calls).toBe(0);
+    expect(result.response.status).toBe(200);
+    expect(fetchState.calls).toBe(1);
   });
 });

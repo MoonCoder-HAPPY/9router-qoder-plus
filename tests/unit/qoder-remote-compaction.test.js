@@ -98,6 +98,7 @@ describe("Qoder remote compaction v2 bridge", () => {
         { id: "chat-1", model: "DeepSeek-Flash", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
         state,
       ),
+      ...openaiToOpenAIResponsesResponse(null, state),
     ];
 
     const doneItems = events
@@ -124,6 +125,7 @@ describe("Qoder remote compaction v2 bridge", () => {
         { id: "chat-2", model: "DeepSeek-Flash", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
         state,
       ),
+      ...openaiToOpenAIResponsesResponse(null, state),
     ];
     const compacted = events.find((event) => event.event === "response.output_item.done").data.item;
 

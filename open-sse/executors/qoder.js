@@ -37,15 +37,8 @@ import {
 } from "../shared/qoder/constants.js";
 import { getQoderModelConfig, resolveQoderModels } from "../services/qoderModels.js";
 import { resolveCodexErrorCode, withRetryAfterHint, CONTEXT_OVERFLOW_HEADERS } from "../config/errorConfig.js";
-import { buildErrorBody } from "../utils/error.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
-import {
-  estimateRequestTokens,
-  evaluateContextAdmission,
-  noteContextRejection,
-  recentContextRejections,
-  clearContextRejections,
-} from "../utils/contextAdmission.js";
+import { estimateRequestTokens } from "../utils/contextAdmission.js";
 import { QODER_CONTEXT_WINDOW } from "../../src/shared/services/codexCompat.js";
 
 // ============ 9router-fix: Qoder queue-aware retry patch ============
@@ -1295,54 +1288,22 @@ export class QoderExecutor extends BaseExecutor {
       return { response: fakeResp, url, headers: {}, transformedBody: body };
     }
 
-    // Proactive hard-window admission. Codex receives the lower 900K compaction
-    // threshold from the model catalog; keeping the server guard at the fixed 1M
-    // input window leaves room for client-side compaction and tokenizer differences
-    // instead of turning the soft compaction line into an immediate HTTP 400.
+    // Diagnostic only: production measured ~1M estimated vs 524K actual tokens.
+    // Rejecting on this heuristic strands Codex before its real 900K compact
+    // threshold. The upstream enforces its window; response usage drives Codex.
     if (body?._compact !== true) {
       try {
-        // One window for every Qoder model: the upstream `max_input_tokens` says
-        // 180k for models that serve 1M, and using it here rejected sessions at a
-        // fifth of the window they actually had (see codexCompat.js).
         const contextWindow = QODER_CONTEXT_WINDOW;
-        const rejectionKey = `${psd.userId || credentials?.id || "anon"}:${qoderKey}:${payload.session_id}`;
-        const admission = evaluateContextAdmission({
-          estimatedTokens: estimateRequestTokens(body),
-          contextWindow,
-          settings: { proactiveContextGuard: true },
-          recentRejections: recentContextRejections(rejectionKey),
-        });
-        if (metrics && admission.limit) {
-          metrics.contextPeakEstimate = admission.estimatedTokens;
-          metrics.contextLimit = admission.limit;
+        const estimatedTokens = estimateRequestTokens(body);
+        if (metrics) {
+          metrics.contextPeakEstimate = estimatedTokens;
+          metrics.contextLimit = contextWindow;
         }
-        if (admission.allowed && admission.limit && admission.estimatedTokens > admission.limit * 0.7) {
-          log?.info?.(CODE_LOG, `context_peak est=${admission.estimatedTokens} limit=${admission.limit} window=${contextWindow}`);
+        if (estimatedTokens > contextWindow * 0.7) {
+          log?.info?.(CODE_LOG, `context_estimate est=${estimatedTokens} window=${contextWindow} diagnostic_only=true`);
         }
-        if (!admission.allowed) {
-          noteContextRejection(rejectionKey);
-          const message = `qoder/${qoderKey}: maximum context length exceeded (estimated ${admission.estimatedTokens} tokens, limit ${admission.limit}). Please reduce the length of your messages, then retry.`;
-          if (metrics) {
-            metrics.admissionRejectReason = admission.reason;
-            metrics.compactionTriggers = (metrics.compactionTriggers || 0) + 1;
-          }
-          log?.warn?.(CODE_LOG, `admission_reject reason=${admission.reason} est=${admission.estimatedTokens} limit=${admission.limit}`);
-          return {
-            response: new Response(
-              JSON.stringify(buildErrorBody(400, message, { code: "context_length_exceeded" })),
-              { status: 400, headers: { "Content-Type": "application/json", ...CONTEXT_OVERFLOW_HEADERS } },
-            ),
-            url,
-            headers: {},
-            transformedBody: body,
-          };
-        }
-        // The request fits and is going upstream - clear the rejection streak so a
-        // later overflow starts counting from zero instead of inheriting this one.
-        clearContextRejections(rejectionKey);
       } catch (err) {
-        // Never let the guard break a request it cannot evaluate.
-        log?.warn?.("QODER", `context admission skipped: ${err.message}`);
+        log?.warn?.("QODER", `context estimate skipped: ${err.message}`);
       }
     }
     // 9router-fix: Qoder rejects queue retries with "Duplicate request" if

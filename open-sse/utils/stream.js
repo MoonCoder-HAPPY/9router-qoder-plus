@@ -240,6 +240,17 @@ export function createSSEStream(options = {}) {
         // For Ollama: done=true is the final chunk with finish_reason/usage, must translate
         // For other formats: done=true is the [DONE] sentinel, skip
         if (parsed && parsed.done && targetFormat !== FORMATS.OLLAMA) {
+          // Chat usage trailers precede [DONE]. Do not wait for socket EOF to
+          // finish a Responses turn: some upstreams keep that socket alive.
+          if (sourceFormat === FORMATS.OPENAI_RESPONSES && !keepsOpenAIResponsesFormat && !streamDoneSent) {
+            for (const item of translateResponse(targetFormat, sourceFormat, null, state) || []) {
+              if (!item) continue;
+              const output = formatSSE(item, sourceFormat);
+              reqLogger?.appendConvertedChunk?.(output);
+              controller.enqueue(sharedEncoder.encode(output));
+              sseEmittedCount++;
+            }
+          }
           // Synthesize response.failed if the Responses stream never sent a terminal event
           if (keepsOpenAIResponsesFormat && !openAIResponsesTerminalSeen) {
             const failedOutput = formatIncompleteOpenAIResponsesStreamFailure();

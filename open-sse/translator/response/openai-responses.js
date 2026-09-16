@@ -6,6 +6,7 @@ import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
 import { buildChunk } from "../concerns/chunk.js";
 import { buildUsage } from "../concerns/usage.js";
+import { mergeUsage } from "../../utils/usageTracking.js";
 import { fallbackToolCallId } from "../concerns/toolCall.js";
 import {
   RESPONSES_REASONING_HEADER,
@@ -21,6 +22,9 @@ import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM, OPENAI_FINISH, MODEL_FALLBACK } fro
  * @returns {Array} Array of events with { event, data } structure
  */
 export function openaiToOpenAIResponsesResponse(chunk, state) {
+  if (state.responsesFailed) return [];
+  if (chunk?.error) return failResponse(state, chunk.error);
+  if (chunk?.usage) state.usage = mergeUsage(state.usage, chunk.usage);
   if (state?.provider === "qoder" && isQoderCompactionRequest(state.requestBody)) {
     return qoderCompactionResponse(chunk, state);
   }
@@ -122,7 +126,9 @@ export function openaiToOpenAIResponsesResponse(chunk, state) {
     for (const i in state.msgItemAdded) closeMessage(state, emit, i);
     closeReasoning(state, emit);
     for (const i in state.funcCallIds) closeToolCall(state, emit, i);
-    sendCompleted(state, emit);
+    // Usage can arrive in a choices:[] frame AFTER finish_reason (including
+    // tool_calls). Codex stops reading at response.completed, so finish only
+    // when the upstream stream is flushed and all usage has been collected.
   }
 
   return events;
@@ -133,26 +139,21 @@ function qoderCompactionResponse(chunk, state) {
   state.compactionReasoningBuf ||= "";
   if (state.compactionCompleted) return [];
 
-  if (chunk?.usage && typeof chunk.usage === "object") {
-    state.compactionUsage = {
-      input_tokens: chunk.usage.prompt_tokens || 0,
-      output_tokens: chunk.usage.completion_tokens || 0,
-      total_tokens: chunk.usage.total_tokens
-        || (chunk.usage.prompt_tokens || 0) + (chunk.usage.completion_tokens || 0),
-    };
-  }
-
   const choice = chunk?.choices?.[0];
+  if (choice?.finish_reason) state.compactionFinishReason = choice.finish_reason;
   if (choice?.delta?.content) state.compactionBuf += choice.delta.content;
   const reasoning = choice ? extractReasoningText(choice.delta || {}) : "";
   if (reasoning) state.compactionReasoningBuf += reasoning;
 
-  if (chunk && !choice?.finish_reason) return [];
+  if (chunk) return [];
 
   const summary = (state.compactionBuf || state.compactionReasoningBuf).trim();
-  if (!summary) return [];
+  if (!summary || state.compactionFinishReason !== "stop") {
+    return failResponse(state, { code: "incomplete_response", message: "Compaction did not produce a complete summary; original history must be retained." });
+  }
 
   state.compactionCompleted = true;
+  const usage = responsesUsage(state.usage);
   state.responseId = state.responseId || (chunk?.id ? `resp_${chunk.id}` : `resp_${Date.now()}`);
   const nextSeq = () => ++state.seq;
   return [
@@ -182,7 +183,7 @@ function qoderCompactionResponse(chunk, state) {
           status: "completed",
           background: false,
           error: null,
-          ...(state.compactionUsage ? { usage: state.compactionUsage } : {}),
+          ...(usage ? { usage } : {}),
         },
         sequence_number: nextSeq(),
       },
@@ -482,6 +483,7 @@ function closeToolCall(state, emit, idx) {
 function sendCompleted(state, emit) {
   if (!state.completedSent) {
     state.completedSent = true;
+    const usage = responsesUsage(state.usage);
     emit("response.completed", {
       type: "response.completed",
       response: {
@@ -490,10 +492,35 @@ function sendCompleted(state, emit) {
         created_at: state.created,
         status: "completed",
         background: false,
-        error: null
+        error: null,
+        ...(usage ? { usage } : {}),
       }
     });
   }
+}
+
+function failResponse(state, error) {
+  state.responsesFailed = true;
+  state.completedSent = true;
+  return [{
+    event: "response.failed",
+    data: {
+      type: "response.failed",
+      sequence_number: ++state.seq,
+      response: { id: state.responseId, object: "response", status: "failed", error, output: [] },
+    },
+  }];
+}
+
+function responsesUsage(usage) {
+  if (!usage || !Number.isFinite(usage.prompt_tokens) || !Number.isFinite(usage.completion_tokens)) return null;
+  return {
+    input_tokens: usage.prompt_tokens,
+    output_tokens: usage.completion_tokens,
+    total_tokens: usage.prompt_tokens + usage.completion_tokens,
+    input_tokens_details: { cached_tokens: usage.prompt_tokens_details?.cached_tokens ?? usage.cached_tokens ?? 0 },
+    output_tokens_details: { reasoning_tokens: usage.completion_tokens_details?.reasoning_tokens ?? usage.reasoning_tokens ?? 0 },
+  };
 }
 
 function flushEvents(state) {

@@ -397,11 +397,11 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     }
     reqLogger.logError(new Error(message), finalBody || translatedBody);
 
-    // Context overflow is the one upstream failure the client can fix by itself.
     // Codex only recognises `context_length_exceeded` inside an SSE `response.failed`
     // event; as an HTTP 400 JSON body it maps to a non-retryable InvalidRequest and
-    // the turn dies without ever compacting. Re-shape it as a stream for
-    // Responses-API clients so their auto-compaction can do its job. The status we
+    // the turn loses the specific error classification. Re-shape it as a stream
+    // for Responses-API clients. This is NOT an automatic compaction trigger;
+    // compaction is driven by successful response usage. The status we
     // report internally stays the real one, so logging, cooldowns and the
     // failed-request filter in the dashboard are unaffected.
     if (providerResponse.headers?.get?.(CONTEXT_OVERFLOW_HEADER) === "1") {
