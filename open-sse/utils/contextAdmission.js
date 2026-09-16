@@ -120,6 +120,7 @@ export function noteContextRejection(key, now = Date.now()) {
 
 export function clearContextRejections(key) {
   if (key) rejections.delete(key);
+  else rejections.clear();
 }
 
 export const CONTEXT_REJECTION_WINDOW_MS = REJECTION_WINDOW_MS;

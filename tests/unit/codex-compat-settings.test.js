@@ -44,20 +44,21 @@ describe("codexCompat persisted settings", () => {
     expect(settings.codexCompat).toEqual(CODEX_COMPAT_DEFAULTS);
   });
 
-  it("persists edits and clamps out-of-range values", async () => {
+  it("keeps context policy fixed while persisting unrelated retry settings", async () => {
     const { getSettings, updateSettings } = await load();
     await updateSettings({
       codexCompat: { autoCompactRatio: 0.75, autoCompactMin: 200000, autoCompactMax: 400000, autoContinueMax: 0 },
     });
     let settings = await getSettings();
-    expect(settings.codexCompat.autoCompactRatio).toBe(0.75);
-    expect(settings.codexCompat.autoCompactMin).toBe(200000);
+    expect(settings.codexCompat.autoCompactRatio).toBe(CODEX_COMPAT_DEFAULTS.autoCompactRatio);
+    expect(settings.codexCompat.autoCompactMin).toBe(CODEX_COMPAT_DEFAULTS.autoCompactMin);
+    expect(settings.codexCompat.autoCompactMax).toBe(CODEX_COMPAT_DEFAULTS.autoCompactMax);
     expect(settings.codexCompat.autoContinueMax).toBe(0);
 
     // Values arriving from an older/rogue dashboard build are clamped, not trusted.
     await updateSettings({ codexCompat: { autoCompactRatio: 99, autoContinueMax: -5, firstTokenTimeoutFallback: "nonsense" } });
     settings = await getSettings();
-    expect(settings.codexCompat.autoCompactRatio).toBe(1);
+    expect(settings.codexCompat.autoCompactRatio).toBe(CODEX_COMPAT_DEFAULTS.autoCompactRatio);
     expect(settings.codexCompat.autoContinueMax).toBe(0);
     expect(settings.codexCompat.firstTokenTimeoutFallback).toBe(CODEX_COMPAT_DEFAULTS.firstTokenTimeoutFallback);
   });
@@ -67,7 +68,7 @@ describe("codexCompat persisted settings", () => {
     await updateSettings({ codexCompat: { autoCompactRatio: 0.4 }, requireLogin: false });
     const settings = await getSettings();
     expect(settings.requireLogin).toBe(false);
-    expect(settings.codexCompat.autoCompactRatio).toBe(0.4);
+    expect(settings.codexCompat.autoCompactRatio).toBe(CODEX_COMPAT_DEFAULTS.autoCompactRatio);
     expect(settings.codexCompat.rateLimitRetryAfterCapMs).toBe(CODEX_COMPAT_DEFAULTS.rateLimitRetryAfterCapMs);
   });
 });

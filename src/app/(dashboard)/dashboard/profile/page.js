@@ -10,6 +10,7 @@ import { APP_CONFIG } from "@/shared/constants/config";
 import { LOCALE_COOKIE, normalizeLocale } from "@/i18n/config";
 import { translate } from "@/i18n/runtime";
 import { LOCALE_FLAGS } from "@/shared/constants/locales";
+import { CODEX_COMPAT_DEFAULTS } from "@/shared/constants/codexCompat";
 
 function getLocaleFromCookie() {
   if (typeof document === "undefined") return "en";
@@ -31,15 +32,7 @@ const DEFAULT_MODEL_IDLE_ALERT = {
   messageTemplate: "[9router] No successful model call for {idleMinutes} minutes. Last call: {lastCallAt}.",
 };
 
-const DEFAULT_CODEX_COMPAT = {
-  autoCompactRatio: 0.5,
-  autoCompactMin: 120000,
-  autoCompactMax: 500000,
-  proactiveContextGuard: true,
-  autoContinueMax: 1,
-  firstTokenTimeoutFallback: "account-then-budget",
-  rateLimitRetryAfterCapMs: 120000,
-};
+const DEFAULT_CODEX_COMPAT = { ...CODEX_COMPAT_DEFAULTS };
 
 function normalizeCodexCompatForm(value) {
   return { ...DEFAULT_CODEX_COMPAT, ...(value || {}) };
@@ -1237,7 +1230,7 @@ export default function ProfilePage() {
           <form onSubmit={saveCodexCompat} className="flex flex-col gap-4">
             <div className="flex items-start sm:items-center justify-between gap-4">
               <div className="flex-1 min-w-0">
-                <p className="font-medium text-sm sm:text-base">Proactive context guard</p>
+                <p className="font-medium text-sm sm:text-base">Proactive context guard (fixed)</p>
                 <p className="text-xs sm:text-sm text-text-muted">
                   Reject an oversized prompt before the upstream call so Codex compacts losslessly instead of hitting the ceiling.
                 </p>
@@ -1245,31 +1238,31 @@ export default function ProfilePage() {
               <Toggle
                 checked={codexCompatForm.proactiveContextGuard === true}
                 onChange={() => updateCodexCompatForm("proactiveContextGuard", !(codexCompatForm.proactiveContextGuard === true))}
-                disabled={loading || codexCompatLoading}
+                disabled
               />
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2 border-t border-border/50">
               <div className="flex flex-col gap-2">
-                <label className="font-medium text-sm sm:text-base">Compaction ratio</label>
+                <label className="font-medium text-sm sm:text-base">Compaction ratio (fixed)</label>
                 <Input type="number" min="0.05" max="1" step="0.05"
                   value={codexCompatForm.autoCompactRatio}
                   onChange={(e) => updateCodexCompatForm("autoCompactRatio", e.target.value)}
-                  disabled={loading || codexCompatLoading} />
+                  disabled />
               </div>
               <div className="flex flex-col gap-2">
-                <label className="font-medium text-sm sm:text-base">Compaction floor</label>
+                <label className="font-medium text-sm sm:text-base">Compaction floor (fixed)</label>
                 <Input type="number" min="1000" step="1000"
                   value={codexCompatForm.autoCompactMin}
                   onChange={(e) => updateCodexCompatForm("autoCompactMin", e.target.value)}
-                  disabled={loading || codexCompatLoading} />
+                  disabled />
               </div>
               <div className="flex flex-col gap-2">
-                <label className="font-medium text-sm sm:text-base">Compaction ceiling</label>
+                <label className="font-medium text-sm sm:text-base">Compaction ceiling (fixed)</label>
                 <Input type="number" min="1000" step="1000"
                   value={codexCompatForm.autoCompactMax}
                   onChange={(e) => updateCodexCompatForm("autoCompactMax", e.target.value)}
-                  disabled={loading || codexCompatLoading} />
+                  disabled />
               </div>
             </div>
 

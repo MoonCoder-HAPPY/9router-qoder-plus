@@ -38,7 +38,7 @@ Qoder 在请求被上游拒绝时（最常见的是上下文超过模型上限�
 - 解码嵌套的上游错误原文，超长时使用客户端能识别的标准措辞（`maximum context length` / `prompt is too long` / `reduce the length`），Codex、Claude Code 收到后会走自己的压缩（compact）逻辑，而不是无声死循环。
 - 完整错误原文写入容器日志（`[QODER] upstream envelope error 400 (context overflow) · {...}`），便于排查。
 - `400` 这类"请求体本身被拒"的错误不再触发账号轮换：换任何一个账号都会被同样拒绝，旧逻辑只会把整个账号池按顺序锁一遍。
-- `/v1/models` 中 Qoder 各模型的 `contextWindow` 改为取自 Qoder 实时模型目录（例如 DeepSeek-Flash `1000000`、Qwen3.8-Max `180000`），不再是统一的 `200000` 占位值。
+- `/v1/models` 中所有 Qoder 模型统一返回 `contextWindow=1000000`、`auto_compact_token_limit=900000`；Qoder 实时目录中的不一致窗口值不再参与客户端规划。
 
 ### Qoder 超时参数可配置
 
@@ -274,6 +274,8 @@ node scripts/codex-models-cache.mjs --base http://<9router>:20128 --key <API_KEY
 ```toml
 model = "DeepSeek-Flash"
 model_provider = "nine"
+model_context_window = 1000000
+model_auto_compact_token_limit = 900000
 model_reasoning_effort = "high"
 model_reasoning_summary = "detailed"
 

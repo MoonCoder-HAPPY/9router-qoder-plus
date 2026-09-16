@@ -8,6 +8,11 @@ import { register } from "../index.js";
 import { FORMATS } from "../formats.js";
 import { normalizeResponsesInput, splitResponsesFunctionOutput } from "../formats/responsesApi.js";
 import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM } from "../schema/index.js";
+import {
+  QODER_COMPACTION_PROMPT,
+  isQoderCompactionRequest,
+  parseQoderCompactionContent,
+} from "../concerns/qoderCompaction.js";
 
 // Responses API enforces max 64 chars on call_id (#393)
 const MAX_CALL_ID_LEN = 64;
@@ -21,6 +26,7 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
 
   const result = { ...body };
   result.messages = [];
+  const isCompactRequest = isQoderCompactionRequest(body);
 
   // Convert instructions to system message
   if (body.instructions) {
@@ -184,6 +190,19 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
       }
       continue;
     }
+    else if (itemType === "compaction") {
+      const compacted = parseQoderCompactionContent(item.encrypted_content);
+      if (compacted) {
+        result.messages.push({
+          role: ROLE.USER,
+          content: `[Compacted conversation context]\n${compacted.summary}`,
+        });
+      }
+      continue;
+    }
+    else if (itemType === "compaction_trigger") {
+      continue;
+    }
   }
 
   // Flush remaining
@@ -218,6 +237,16 @@ export function openaiResponsesToOpenAIRequest(model, body, stream, credentials)
         };
       })
       .filter(Boolean);
+  }
+
+  if (isCompactRequest) {
+    result._compact = true;
+    result.messages.push({ role: ROLE.USER, content: QODER_COMPACTION_PROMPT });
+    delete result.tools;
+    delete result.tool_choice;
+    delete result.parallel_tool_calls;
+  } else {
+    delete result._compact;
   }
 
   // Cleanup Responses API specific fields

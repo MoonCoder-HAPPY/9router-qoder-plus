@@ -34,13 +34,13 @@ describe("codexCompat settings", () => {
         proactiveContextGuard: false,
       },
     });
-    expect(cfg.autoCompactRatio).toBe(1);
-    expect(cfg.autoCompactMin).toBe(1000);
+    expect(cfg.autoCompactRatio).toBe(0.9);
+    expect(cfg.autoCompactMin).toBe(120000);
     expect(cfg.autoCompactMax).toBe(CODEX_COMPAT_DEFAULTS.autoCompactMax);
     expect(cfg.autoContinueMax).toBe(5);
     expect(cfg.firstTokenTimeoutFallback).toBe("account-then-budget");
     expect(cfg.rateLimitRetryAfterCapMs).toBe(600000);
-    expect(cfg.proactiveContextGuard).toBe(false);
+    expect(cfg.proactiveContextGuard).toBe(true);
   });
 
   it("computes a threshold below the real window for large contexts", () => {
@@ -63,8 +63,16 @@ describe("codexCompat settings", () => {
     expect(computeAutoCompactLimit(null)).toBeNull();
   });
 
-  it("honours overrides for ratio and bounds", () => {
-    expect(computeAutoCompactLimit(1000000, { autoCompactRatio: 0.6, autoCompactMin: 150000, autoCompactMax: 600000 })).toBe(600000);
-    expect(computeAutoCompactLimit(400000, { autoCompactRatio: 0.6, autoCompactMin: 150000, autoCompactMax: 600000 })).toBe(240000);
+  it("keeps the Qoder policy fixed even when persisted settings request another window policy", () => {
+    const requested = normalizeCodexCompatSettings({
+      autoCompactRatio: 0.2,
+      autoCompactMin: 10_000,
+      autoCompactMax: 200_000,
+      proactiveContextGuard: false,
+    });
+    expect(requested.autoCompactRatio).toBe(0.9);
+    expect(requested.autoCompactMax).toBe(1_000_000);
+    expect(requested.proactiveContextGuard).toBe(true);
+    expect(computeAutoCompactLimit(QODER_CONTEXT_WINDOW, requested)).toBe(900_000);
   });
 });

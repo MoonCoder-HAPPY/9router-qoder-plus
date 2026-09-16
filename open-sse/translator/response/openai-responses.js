@@ -9,6 +9,7 @@ import { buildUsage } from "../concerns/usage.js";
 import { fallbackToolCallId } from "../concerns/toolCall.js";
 import { reasoningDelta, extractReasoningText } from "../concerns/reasoning.js";
 import { buildReasoningEncryptedContent } from "../concerns/reasoningEnvelope.js";
+import { buildQoderCompactionContent, isQoderCompactionRequest } from "../concerns/qoderCompaction.js";
 import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM, OPENAI_FINISH, MODEL_FALLBACK } from "../schema/index.js";
 
 /**
@@ -16,6 +17,9 @@ import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM, OPENAI_FINISH, MODEL_FALLBACK } fro
  * @returns {Array} Array of events with { event, data } structure
  */
 export function openaiToOpenAIResponsesResponse(chunk, state) {
+  if (state?.provider === "qoder" && isQoderCompactionRequest(state.requestBody)) {
+    return qoderCompactionResponse(chunk, state);
+  }
   if (!chunk) {
     return flushEvents(state);
   }
@@ -118,6 +122,68 @@ export function openaiToOpenAIResponsesResponse(chunk, state) {
   }
 
   return events;
+}
+
+function qoderCompactionResponse(chunk, state) {
+  state.compactionBuf ||= "";
+  state.compactionReasoningBuf ||= "";
+  if (state.compactionCompleted) return [];
+
+  if (chunk?.usage && typeof chunk.usage === "object") {
+    state.compactionUsage = {
+      input_tokens: chunk.usage.prompt_tokens || 0,
+      output_tokens: chunk.usage.completion_tokens || 0,
+      total_tokens: chunk.usage.total_tokens
+        || (chunk.usage.prompt_tokens || 0) + (chunk.usage.completion_tokens || 0),
+    };
+  }
+
+  const choice = chunk?.choices?.[0];
+  if (choice?.delta?.content) state.compactionBuf += choice.delta.content;
+  const reasoning = choice ? extractReasoningText(choice.delta || {}) : "";
+  if (reasoning) state.compactionReasoningBuf += reasoning;
+
+  if (chunk && !choice?.finish_reason) return [];
+
+  const summary = (state.compactionBuf || state.compactionReasoningBuf).trim();
+  if (!summary) return [];
+
+  state.compactionCompleted = true;
+  state.responseId = state.responseId || (chunk?.id ? `resp_${chunk.id}` : `resp_${Date.now()}`);
+  const nextSeq = () => ++state.seq;
+  return [
+    {
+      event: "response.output_item.done",
+      data: {
+        type: "response.output_item.done",
+        output_index: 0,
+        item: {
+          type: "compaction",
+          encrypted_content: buildQoderCompactionContent({
+            summary,
+            model: state.model || chunk?.model || null,
+          }),
+        },
+        sequence_number: nextSeq(),
+      },
+    },
+    {
+      event: "response.completed",
+      data: {
+        type: "response.completed",
+        response: {
+          id: state.responseId,
+          object: "response",
+          created_at: state.created,
+          status: "completed",
+          background: false,
+          error: null,
+          ...(state.compactionUsage ? { usage: state.compactionUsage } : {}),
+        },
+        sequence_number: nextSeq(),
+      },
+    },
+  ];
 }
 
 // Helper functions

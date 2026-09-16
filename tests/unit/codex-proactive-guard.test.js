@@ -66,7 +66,7 @@ beforeEach(() => {
     return new Response("data: [DONE]\n\n", { status: 200, headers: { "Content-Type": "text/event-stream" } });
   });
   codexCompatMock.settings.proactiveContextGuard = true;
-  clearContextRejections("user-1:dfmodel");
+  clearContextRejections();
 });
 
 afterEach(() => {
@@ -88,6 +88,14 @@ describe("proactive context admission", () => {
     expect(fetchState.calls).toBe(0);
   });
 
+  it("allows an oversized compact task through so the client can actually shrink history", async () => {
+    const executor = new QoderExecutor();
+    const body = { ...bigBody(800000), _compact: true };
+    const result = await executor.execute({ model: "qoder/dfmodel", body, stream: true, credentials, signal: null, log: null });
+    expect(result.response.status).toBe(200);
+    expect(fetchState.calls).toBe(1);
+  });
+
   it("lets a small prompt through to the upstream", async () => {
     const executor = new QoderExecutor();
     const result = await executor.execute({ model: "qoder/dfmodel", body: bigBody(50), stream: true, credentials, signal: null, log: null });
@@ -98,19 +106,35 @@ describe("proactive context admission", () => {
   it("stops rejecting after the cap so a retrying client is never trapped", async () => {
     const executor = new QoderExecutor();
     for (let i = 0; i < 3; i += 1) {
-      const rejected = await executor.execute({ model: "qoder/dfmodel", body: bigBody(800000), stream: true, credentials, signal: null, log: null });
+      const rejected = await executor.execute({ model: "qoder/dfmodel", body: bigBody(800000), stream: true, credentials, signal: null, log: null, clientSessionId: "retry-session" });
       expect(rejected.response.status).toBe(400);
     }
-    const fourth = await executor.execute({ model: "qoder/dfmodel", body: bigBody(800000), stream: true, credentials, signal: null, log: null });
+    const fourth = await executor.execute({ model: "qoder/dfmodel", body: bigBody(800000), stream: true, credentials, signal: null, log: null, clientSessionId: "retry-session" });
     expect(fourth.response.status).toBe(200);
     expect(fetchState.calls).toBe(1);
   });
 
-  it("behaves exactly as before when the guard is switched off", async () => {
+  it("keeps rejection caps isolated between client sessions", async () => {
+    const executor = new QoderExecutor();
+    for (let i = 0; i < 3; i += 1) {
+      const rejected = await executor.execute({ model: "qoder/dfmodel", body: bigBody(800000), stream: true, credentials, signal: null, log: null, clientSessionId: "session-a" });
+      expect(rejected.response.status).toBe(400);
+    }
+
+    const otherSession = await executor.execute({ model: "qoder/dfmodel", body: bigBody(800000), stream: true, credentials, signal: null, log: null, clientSessionId: "session-b" });
+    expect(otherSession.response.status).toBe(400);
+    expect(fetchState.calls).toBe(0);
+
+    const releasedSession = await executor.execute({ model: "qoder/dfmodel", body: bigBody(800000), stream: true, credentials, signal: null, log: null, clientSessionId: "session-a" });
+    expect(releasedSession.response.status).toBe(200);
+    expect(fetchState.calls).toBe(1);
+  });
+
+  it("does not let persisted settings disable the fixed Qoder guard", async () => {
     codexCompatMock.settings.proactiveContextGuard = false;
     const executor = new QoderExecutor();
     const result = await executor.execute({ model: "qoder/dfmodel", body: bigBody(800000), stream: true, credentials, signal: null, log: null });
-    expect(result.response.status).toBe(200);
-    expect(fetchState.calls).toBe(1);
+    expect(result.response.status).toBe(400);
+    expect(fetchState.calls).toBe(0);
   });
 });

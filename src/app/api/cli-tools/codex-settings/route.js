@@ -7,6 +7,10 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { parseTOML, stringifyTOML } from "confbox";
+import {
+  QODER_AUTO_COMPACT_TOKEN_LIMIT,
+  QODER_CONTEXT_WINDOW,
+} from "@/shared/constants/codexCompat";
 
 const execAsync = promisify(exec);
 
@@ -131,6 +135,8 @@ export async function POST(request) {
     // Update only 9Router related fields (api_key goes to auth.json, not config.toml)
     parsed.model = model;
     parsed.model_provider = "9router";
+    parsed.model_context_window = QODER_CONTEXT_WINDOW;
+    parsed.model_auto_compact_token_limit = QODER_AUTO_COMPACT_TOKEN_LIMIT;
 
     // Update or create 9router provider section (no api_key - Codex reads from auth.json)
     // Ensure /v1 suffix is added only once
@@ -199,6 +205,8 @@ export async function DELETE() {
     if (parsed.model_provider === "9router") {
       delete parsed.model;
       delete parsed.model_provider;
+      delete parsed.model_context_window;
+      delete parsed.model_auto_compact_token_limit;
     }
 
     // Remove 9router provider section

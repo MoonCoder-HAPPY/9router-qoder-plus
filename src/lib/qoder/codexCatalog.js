@@ -14,7 +14,7 @@
 
 // Relative import (not the "@/" alias) so this module also runs from plain Node, which is
 // what scripts/codex-models-cache.mjs does when it generates a client catalog.
-import { computeAutoCompactLimit, QODER_CONTEXT_WINDOW } from "../../shared/services/codexCompat.js";
+import { QODER_AUTO_COMPACT_TOKEN_LIMIT, QODER_CONTEXT_WINDOW } from "../../shared/services/codexCompat.js";
 
 /** Tier aliases are callable but should not clutter the model picker. */
 const HIDDEN_SLUGS = new Set(["auto", "ultimate", "performance", "efficient", "lite"]);
@@ -109,7 +109,7 @@ export function buildCodexCatalogEntries(models, options = {}) {
       supports_image_detail_original: false,
       context_window: contextWindow,
       max_context_window: contextWindow,
-      auto_compact_token_limit: computeAutoCompactLimit(contextWindow),
+      auto_compact_token_limit: QODER_AUTO_COMPACT_TOKEN_LIMIT,
       comp_hash: null,
       effective_context_window_percent: 100,
       experimental_supported_tools: [],
