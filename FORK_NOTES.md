@@ -2,15 +2,14 @@
 
 This repository is a full-source fork of `decolua/9router` with Qoder-focused runtime hardening and dashboard additions applied directly to the codebase.
 
+**The canonical document for this fork is [README.md](./README.md)** (Chinese). It carries the current feature list, environment contract, deployment steps and dashboard changes. This file only keeps a short, high-level index; when the two disagree, README.md wins.
+
 ## Added Capabilities
 
-- Qoder HTTP queued responses are retried in place instead of immediately failing the client session.
-- Qoder queued/error envelopes emitted as the first SSE event are retried before being surfaced to the client.
-- Qoder stream stall and upstream timeout thresholds are configurable by environment variables.
-- Qoder retry attempts refresh request IDs and signatures to avoid duplicate-request rejections.
-- Qoder resource package quota is parsed from `orgResourcePackage.cap` and displayed in the dashboard.
-- Qoder enabled chat model fallbacks use Qoder `display_name` values, including `GLM-5.2`.
-- Dashboard Profile includes a Model Idle Alert section for DingTalk webhook alerts when successful model calls have been idle for a configured threshold.
+- Long sessions: one fixed 1M context window and 900K auto-compaction line for every Qoder model, faithful `response.completed.usage`, end-to-end bridging of Codex compaction items, expandable reasoning summaries, and per-client session isolation on the Qoder side.
+- Availability: in-place retry of queued responses, first-SSE-envelope error handling, configurable first-token timeout fallback policy, hidden auto-continue when a turn stops right after announcing the next step, and multimodal image input.
+- Quota and alerts: per-API-key Qoder account allocation with per-account priority, per-request credit accounting (CC-Switch compatible `/api/usage` plus the `/user/balance` alias), and DingTalk idle/usage/exhaustion alerts.
+- Dashboard: usage details gain a `Credits Used` column and `API Key Name` column plus key-identity filtering; the quota modal streams per-account balances and supports one-click removal of an allocation; the Profile settings page keeps only the retry controls that still apply.
 
 ## Runtime Defaults
 
@@ -19,8 +18,16 @@ This repository is a full-source fork of `decolua/9router` with Qoder-focused ru
 | `QODER_QUEUE_MAX_ATTEMPTS` | `15` | Maximum queued retry attempts |
 | `QODER_QUEUE_BASE_DELAY_MS` | `5000` | First queued retry wait |
 | `QODER_QUEUE_MAX_DELAY_MS` | `60000` | Maximum queued retry wait |
+| `QODER_KEEPALIVE_MS` | `10000` | SSE keepalive interval while queued or silent |
+| `QODER_TIMEOUT_MAX_ATTEMPTS` | `3` | First-token timeout retry attempts |
+| `QODER_TIMEOUT_BASE_DELAY_MS` | `3000` | First-token timeout first retry wait |
+| `QODER_TIMEOUT_MAX_DELAY_MS` | `15000` | First-token timeout maximum retry wait |
+| `QODER_TIMEOUT_BUDGET_MULTIPLIER` | `2` | Multiplier for the extended timeout budget |
+| `QODER_AUTO_CONTINUE_MAX` | `1` | Hidden auto-continue attempts (0 disables) |
 | `QODER_STREAM_TIMEOUT_MS` | `600000` | Qoder upstream header timeout |
 | `QODER_STALL_TIMEOUT_MS` | `600000` | Qoder stream idle-byte timeout |
+
+The first-token fallback strategy, and the auto-continue count when the environment variable is unset, are also editable under Dashboard -> Profile -> `请求重试与恢复`.
 
 ## Model Idle DingTalk Alert
 

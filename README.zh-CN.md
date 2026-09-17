@@ -1,3 +1,5 @@
+> **说明：本文件是上游 9Router 的完整中文介绍，内容与本文仓库（9router-qoder-plus）的 Qoder 增强不一定同步。**
+> **本仓库实际能力、部署方式与最新改造，请以根目录 [README.md](./README.md) 为准。**
 
 <div align="center">
   <img src="./images/9router.png?1" alt="9Router Dashboard" width="800"/>

@@ -4,6 +4,13 @@
 
 原项目 9Router 是一个面向 Claude Code、Codex、Cursor、Cline、OpenCode 等 AI 编程工具的本地/自部署 AI Router，提供 OpenAI-compatible API、Claude/OpenAI 格式转换、多 Provider 管理、额度追踪、RTK Token Saver、Fallback/Combo 路由等能力。
 
+### 本版本增强速览
+
+- **长会话稳定**：Qoder 统一 1M 上下文 / 900K 自动压缩线、响应 usage 保真、压缩协议桥接、可展开的思考过程、并发会话隔离。
+- **Qoder 可用性**：排队不中断、流式错误兜底、首 token 超时回退策略、自动续跑、多模态图片输入。
+- **额度与告警**：按 Key 分配 Qoder 账号额度、按请求精确累计 credits、钉钉空闲/阈值/耗尽告警。
+- **后台体验**：使用详情新增 `Credits Used` 与 `API Key Name` 追踪筛选；额度弹窗逐条加载、可快捷移除分配；设置页只保留仍然生效的选项。
+
 ### Qoder 排队不中断
 
 针对 Qoder 在高峰期常见的排队响应做了增强：
@@ -28,17 +35,25 @@ Qoder 有时不是直接返回 HTTP 错误，而是在已经建立的 SSE 流中
 - Qoder 上游工具调用缺少 `id` 时会自动生成稳定 ID，不再静默丢失工具调用。
 - Responses API 中 reasoning、message、function call 使用独立递增的 `output_index`，避免 Codex 将工具调用误判为 reasoning 的重复输出。
 
+### Qoder 并发会话隔离
+
+Qoder 按 `session_id` 在服务端保存会话状态。旧实现只用「账号 + 模型」派生 session，两个客户端同时用一个账号时，历史会互相污染，表现为**一个会话的内容出现在另一个会话里**、越跑越乱。本版改为：
+
+- 会话身份在请求进入 9router 时就解析一次（优先客户端明确给出的会话，例如 Claude Code `metadata.user_id` 里的 `_session_*`、`x-session-id` 之类的会话请求头、`prompt_cache_key` / `session_id` / `conversation_id`；没有明确身份时用累计助手文本哈希保持同一会话稳定，最后才退回按连接生成），再传给 Qoder executor。
+- `session_id` 改为 `hash(模型, 客户端会话身份)`：账号不再是会话边界，同一个账号下的不同客户端互不串话；重试、自动续跑和账号轮换沿用同一个会话身份。
+- `chat_record_id` 一并把会话身份纳入哈希，避免不同会话出现相同 `request_set_id`。
+
 ### Qoder 上下文超限正确报错
 
 Qoder 在请求被上游拒绝时（最常见的是上下文超过模型上限），返回的是 HTTP `200` + SSE 首包 `statusCodeValue:400` 的错误 envelope，真正的错误信息还被嵌套了三层 JSON。原版会把这段错误直接当成助手正文（`[qoder error 400: ...]`）返回，客户端因此认为这一轮"成功"了：把乱码正文写进历史继续重试，上下文越滚越大，每次都要等上游约 1 分钟才拒绝，日志里还记成 `success` 并按字节估算出几百万 token 的假用量。
 
 本版改为：
 
-- 在向下游写出第一个字节之前就识别错误 envelope，直接返回真实的 HTTP `400/5xx`，请求详情记录为 `error`，不再伪造 token 用量。
-- 解码嵌套的上游错误原文，超长时使用客户端能识别的标准措辞（`maximum context length` / `prompt is too long` / `reduce the length`），Codex、Claude Code 收到后会走自己的压缩（compact）逻辑，而不是无声死循环。
+- 在向下游写出第一个字节之前就识别错误 envelope，按真实状态记录并返回，请求详情记录为 `error`，不再伪造 token 用量；对 Codex 这类 Responses 客户端，会改写为 SSE `response.failed` 并保留 `context_length_exceeded` 分类，避免被当成普通且不可重试的 400。
+- 解码嵌套的上游错误原文，超长时使用客户端能识别的标准措辞（`maximum context length` / `prompt is too long` / `reduce the length`），并保留 Codex 能识别的 `context_length_exceeded` 分类，而不是无声死循环。长会话的自动压缩由成功响应的 usage 驱动（见下文「Codex 接入」），错误 envelope 的职责是让客户端看到真实失败。
 - 完整错误原文写入容器日志（`[QODER] upstream envelope error 400 (context overflow) · {...}`），便于排查。
 - `400` 这类"请求体本身被拒"的错误不再触发账号轮换：换任何一个账号都会被同样拒绝，旧逻辑只会把整个账号池按顺序锁一遍。
-- `/v1/models` 中所有 Qoder 模型统一返回 `contextWindow=1000000`、`auto_compact_token_limit=900000`；Qoder 实时目录中的不一致窗口值不再参与客户端规划。
+- `/v1/models` 中所有 Qoder 模型统一返回 `contextWindow=1000000`，Codex 专用的 `models[]` 目录同时给出 `auto_compact_token_limit=900000`；Qoder 实时目录中 180k 之类的失真窗口值不再参与客户端规划。本地上下文估算只做诊断日志（`context_estimate`），不再据此提前拒绝请求，真正超限由上游返回并走上文的错误 envelope 路径。
 
 ### Qoder 超时参数可配置
 
@@ -53,15 +68,20 @@ Qoder 在请求被上游拒绝时（最常见的是上下文超过模型上限�
 | `QODER_TIMEOUT_MAX_ATTEMPTS` | `3` | Qoder 首 token 超时（504 First Token Timeout）最多重试次数 |
 | `QODER_TIMEOUT_BASE_DELAY_MS` | `3000` | 首 token 超时首次重试等待时间 |
 | `QODER_TIMEOUT_MAX_DELAY_MS` | `15000` | 首 token 超时单次重试最大等待时间 |
+| `QODER_TIMEOUT_BUDGET_MULTIPLIER` | `2` | 放大后的首 token 超时预算倍率，只作用于 extended budget 重试 |
 | `QODER_AUTO_CONTINUE_MAX` | `1` | 模型“宣布下一步却停回合”时的自动续跑次数（0 关闭） |
 | `QODER_STREAM_TIMEOUT_MS` | `600000` | 等待 Qoder 返回响应头的超时时间 |
 | `QODER_STALL_TIMEOUT_MS` | `600000` | Qoder 流式响应两段字节之间的最大空闲时间 |
 
 默认配置约等于：排队最多等待 10 分钟左右，流式空闲超时 10 分钟。
 
+首 token 超时的处理策略可以在 Dashboard -> Profile -> `请求重试与恢复` 中选择（`account-then-budget` / `budget-only` / `off`），详见下文「请求重试与恢复」。
+
 ### Qoder 自动续跑（防“聊着聊着就停”）
 
-部分 Qoder 模型偶尔会在说完“我先看一下……/Let me check …:”这类下一步宣告后直接以 `stop` 结束回合、却不发工具调用，客户端（Codex / Claude Code）会把这当成正常结束，表现为任务中途停住。本版在流结束时会检测这种“悬挂意图”（短文本 + 冒号或意图动词结尾、且本回合没有任何工具调用、请求带工具），自动发起一次隐藏续跑请求（附带“立即执行你刚宣布的步骤”的提示），并把续跑流拼接进同一条响应；日志会打印 `auto-continue 1/1 ...`。默认最多续跑 1 次，可用 `QODER_AUTO_CONTINUE_MAX=0` 关闭。
+部分 Qoder 模型偶尔会在说完“我先看一下……/Let me check …:”这类下一步宣告后直接以 `stop` 结束回合、却不发工具调用，客户端（Codex / Claude Code）会把这当成正常结束，表现为任务中途停住。本版在流结束时会检测这种“悬挂意图”（短文本 + 冒号或意图动词结尾、且本回合没有任何工具调用、请求带工具），自动发起一次隐藏续跑请求（附带“立即执行你刚宣布的步骤”的提示），并把续跑流拼接进同一条响应；日志会打印 `auto-continue 1/1 ...`。默认最多续跑 1 次，可用 `QODER_AUTO_CONTINUE_MAX=0` 关闭，也可以在 Dashboard -> Profile -> `请求重试与恢复` 里设置 `自动续写次数`（0-5）。
+
+注意优先级：**显式设置 `QODER_AUTO_CONTINUE_MAX` 时以环境变量为准**，面板值只在环境变量未设置时生效。本仓库的 Dockerfile 内置了 `QODER_AUTO_CONTINUE_MAX=1`，所以镜像部署下想改用面板值，需要去掉该环境变量（或直接改成期望的数值）。
 
 ### Qoder 额度增强
 
@@ -80,7 +100,7 @@ Dashboard -> Endpoint 的 API Key 管理中，新增了面向 Qoder 的 Key 级�
 - 分配上限按账号剩余可分配额度计算，例如账号 A 可用 10000 时可以只给某个 Key 分配 5000，账号 B 可用 2000 时可以只分配 1000。
 - 账号列表会同时显示其它 Key 已占用的额度和当前还可分配额度，避免手动心算。
 - 运行时会按每个账号自己的分配额度统计消耗，某个账号的分配额度用完后，再切到下一个可用账号。
-- 页面会显示当前 Key 的 `Used / Total`、`Remaining`、`Active Account`，方便判断这个 Key 已使用多少、总共分配多少、当前正在消费哪个账号。
+- 页面会显示当前 Key 的 `Used / Total`、`Remaining`、`Active Account`，方便判断这个 Key 已使用多少、总共分配多少、当前正在消费哪个账号。汇总按已保存的策略计算：只要其中还有账号在查询或查询失败，就整体显示“尚未就绪”，不会把未知额度当成 0，也不会给出缺项的合计，账号全部就绪后自动更新。
 - `Consumption Priority` 会展示每个账号的分配额度、已使用额度和剩余分配额度。
 - 在消费优先级列表中，已用完的账号会置灰并显示 `Exhausted`，当前正在消费的账号会显示浅橙色底和 `In use`。
 - `Reset usage` 支持重置当前 Key 的 Qoder 用量统计，并已适配简体中文确认弹窗。
@@ -88,6 +108,10 @@ Dashboard -> Endpoint 的 API Key 管理中，新增了面向 Qoder 的 Key 级�
 - 单个账号的额度接口读取失败（例如 token 失效返回 401）不会再让整个 Key 的配额检查失效。系统会跳过该账号、继续对其它账号做配额校验，并发送钉钉告警提示重新授权。
 - 已经被验证为"分配额度已用完"的账号会从路由池中移除，不会被继续命中；额度暂时读取不出来的账号保持可用（fail-open），不会因瞬时网络错误被误伤。
 - 客户端中途断连的请求也会把已产生的 token 写入用量记录，方便和账号扣费对账。
+- 打开额度弹窗时先列出全部可用账号、原勾选和优先级，余额由服务端流式逐条返回（有界并发 3、单项 10 秒超时）：一个账号慢或失败不会拖住其它账号，结果原地更新，不重排列表、不覆盖正在输入的值。
+- 已勾选账号的额度就绪即可保存，未选账号慢或失败不阻塞；但所选账号未知或不可用时会在服务端被拒绝。保存只查询当前所选账号，不再走查询全部账号的慢路径。
+- 消费优先级每一行箭头旁都有 `X` 按钮：点击等同取消勾选，并同步清空该账号的优先级和分配额度；点击保存才生效，取消可以放弃修改。它只解除这个 Key 的分配，不删除真实 Qoder 账号，也不触发用量重置。
+- 开启限制时至少要保留一个账号：全部移除会在页面上给出校验提示并阻止保存，服务端同样拒绝空列表，避免 Key 意外获得未授权范围。
 
 ![API Key account allocation modal with per-account Qoder credits](docs/images/api-key-account-allocation.png)
 
@@ -102,6 +126,10 @@ _Key 分配页面支持按 Qoder 账号分别填写可消费额度，并显示�
 
 _消费优先级单独设置，明确控制多个已选账号的消费顺序，并标识当前正在使用或已用完的账号。_
 
+![Remove a single account allocation with the X button](docs/images/api-key-priority-remove.png)
+
+_每一行箭头旁的 `X` 会同步取消勾选、优先级和分配额度；点击保存才落库，取消则整体放弃。_
+
 这样做的原因是 Qoder 缓存命中率和账号连续消费有关。你可以让某个 Key 优先消耗账号 A，A 的分配额度用完后再消耗账号 B，避免多个账号来回切换影响缓存。
 
 ### Qoder 模型列表增强
@@ -109,13 +137,13 @@ _消费优先级单独设置，明确控制多个已选账号的消费顺序，�
 Qoder 官方软件里可选的模型，有些不会稳定出现在 9Router 原始模型列表中。本版增强了模型发现和对外 ID 展示：
 
 - 优先从 Qoder `/model/list` 获取实时 enabled chat 模型，避免静态列表跟不上 Qoder 官方软件里的新模型。
-- 新模型会直接使用 Qoder 返回的 `display_name` 作为默认对外模型 ID，例如 `Qwen3.8-Max`、`Kimi-K3`。
+- 新模型会直接使用 Qoder 返回的 `display_name` 作为默认对外模型 ID，例如 `Qwen3.8-Max-Preview`、`Kimi-K3`。
 - 如果 Qoder live catalog 获取成功，`/v1/models` 只暴露当前 live catalog 中仍存在的模型；已经从 Qoder 移除的旧模型不会再因为历史自定义模型或 alias 重新出现在模型列表里。
-- `/v1/models` 中 Qoder 模型默认返回 `Qwen3.8-Max` 这类可读名称，不再把 `qd/qmodel_38max` 作为主展示 ID。
+- `/v1/models` 中 Qoder 模型默认返回 `Qwen3.8-Max-Preview` 这类可读名称，不再把 `qd/qmodel_preview` 作为主展示 ID。
 - Dashboard -> Providers -> Qoder 的模型卡片可以编辑 `Public Model ID`，用于控制客户端看到和调用的模型 ID。
 - 编辑弹窗中保留只读的 `Qoder Internal ID`，用于排查真实上游绑定关系。
-- 客户端可以直接请求 `{ "model": "Qwen3.8-Max" }`，9Router 会在内部映射回 Qoder 真实 key `qmodel_38max`。
-- 旧调用方式 `qd/<model>`、`qoder/<model>` 继续兼容；同时兼容裸内部 ID，例如 `qmodel_38max`。如果你已经配置了同名 model alias，alias 会优先于 Qoder 内部 ID。
+- 客户端可以直接请求 `{ "model": "Qwen3.8-Max-Preview" }`，9Router 会在内部映射回 Qoder 真实 key `qmodel_preview`。
+- 旧调用方式 `qd/<model>`、`qoder/<model>` 继续兼容；同时兼容裸内部 ID，例如 `qmodel_preview`。如果你已经配置了同名 model alias，alias 会优先于 Qoder 内部 ID。
 - 识别并透传 Qoder 返回的 `price_factor` / `original_price_factor`，模型卡片会展示 `0.6x 额度倍率` 这类倍率标签，`/v1/models` 也会返回对应字段。
 
 ![Qoder model list with display names and credit multipliers](docs/images/qoder-model-list-enhanced.png)
@@ -158,11 +186,12 @@ _Qoder 模型列表优先展示 display name，并显示每个模型的额度倍
 
 4. 图片存在时，Qoder `model_config.is_vl` 和 `chat_context.extra.modelConfig.is_vl` 会设置为 `true`，顶层 `image_urls` 和 `chat_context.imageUrls` 保持 `null`，图片实际通过 `messages[].contents` 传递。
 
-视觉能力判断优先参考 Qoder 实时模型目录中的 `is_vl`，但会对已知误标模型做保守覆盖：
+视觉能力完全跟随 Qoder 实时模型目录的 `is_vl`，不再维护本地白名单或黑名单：
 
 - 视觉能力以 Qoder 实时模型目录的 `is_vl` 为准（例如 DeepSeek-V4-Pro / DeepSeek-Flash 均为 `is_vl: true`，支持图片输入；`lite` 为 `is_vl: false`，收到图片时本地拒绝）。
-- `auto`、`ultimate`、`performance`、`efficient` 等路由档位不会显示为原生视觉模型。
+- `auto`、`ultimate`、`performance`、`efficient` 等路由档位同样跟随实时目录的 `is_vl`，不再单独限制。
 - 非视觉模型收到图片时，9router 会在本地返回 HTTP 400，不把无效图片请求发送到 Qoder。
+- 内联图片不按 base64 传输长度参与上下文估算：本地给每张图片一个有界的视觉 token 预算（约 8192），避免多图会话的诊断估值被传输字节数放大。
 
 图片 URL 支持 data URL 和 HTTP/HTTPS URL。仅提供 `file_id`、没有有效 `image_url` 的图片会返回明确错误，不会把文件 ID 当作 URL 发送。
 
@@ -200,6 +229,30 @@ Qoder 每次成功调用的 usage 帧中会返回实际 `credits` 消耗。9rout
 - 账号额度重新增长时不会被错误标记为 exhausted，也不会从路由池中移除。
 - 旧版本已经记录的用量作为历史下限保留，升级后不会归零。
 - `Reset usage` 按钮仍是唯一会主动清空当前 Key 累计用量的入口。
+
+### 使用详情：Credits 消耗与 API Key 追踪
+
+Dashboard -> Usage -> Details 新增 Qoder 扣费对账和 Key 级追踪能力：
+
+- 表格在 `Output Tokens` 右侧新增 `Credits Used` 列，展示 Qoder 本次请求真实扣费的 credits（`requestDetails.tokens.credits`）。最多显示 4 位小数并去掉末尾多余的 0（如 `0.12`）；真实存在但小于显示精度的扣费显示为 `<0.0001`，不会被误认为免费。`original_credits` 是折扣前标价，不会用来回填。非 Qoder 提供商一律留空，表头 info 按钮用中文说明该列只记录 Qoder 的扣费。
+- 详情抽屉同步展示 `Credits Used`。
+- 新增 `API Key Name` 列和同风格下拉筛选：列显示**调用时**的 Key 名称快照，改名后历史记录仍保留当时的名称；下拉按 Key 身份筛选，选中一个 Key 会包含它改名前后的全部记录。
+- 多个 Key 同名时，下拉标签会用一段非密钥短 ID 区分；Key 被删除后历史记录仍然可选。
+- 无法解析身份的历史记录显示“未知（历史记录）”，与明确没有使用 Key 的请求（“无 API Key”）分开显示。
+- 身份在请求入口取一次快照并随详情保存，不在每个流式分片里查库；升级前已存在的旧记录不做推测回填，新请求开始逐步产生下拉候选。
+
+![Usage details with API Key name filter and per-request Qoder credits](docs/images/usage-details-key-tracking.png)
+
+_使用详情：提供商、API Key 名称、时间范围筛选，以及紧随输出 Token 的 Credits 消耗列。_
+
+### 请求重试与恢复
+
+Dashboard -> Profile 的 `请求重试与恢复` 面板（原 `Codex Compatibility`）只保留两个仍然生效的设置：
+
+- `自动续写次数`：模型“宣布下一步却停回合”时的自动续跑次数（0-5）；显式设置 `QODER_AUTO_CONTINUE_MAX` 时环境变量优先（Dockerfile 内置了该变量）。
+- `首 Token 超时回退`：`先切换账号，再延长等待`（默认，先在同一账号快速重试一次，再按放大预算重试，仍失败则交由账号轮换）、`在同一账号延长等待`（直接使用放大预算）、`保留原有重试策略`（完全沿用上表环境变量的旧式阶梯）。
+
+原面板里失效的固定控件（`Proactive context guard`、`Compaction ratio`、`Compaction floor`、`Compaction ceiling`）已经删除：上下文窗口和压缩线现由固定的 1M / 900K 统一决定，不再接受手工配置，避免客户端和服务端按不同阈值规划。历史保存过的旧值会被忽略，不需要手工清库。
 
 ### 钉钉告警
 
@@ -242,9 +295,11 @@ _钉钉告警设置支持空闲阈值、告警冷却、Webhook、加签 Secret �
 - `Alert Cooldown` 填 `0` 表示不额外冷却。
 - 页面提供 `Test DingTalk` 按钮，可保存配置后立即发送测试消息。
 
-### Codex 接入（模型元数据与思考展示）
+### Codex 接入（模型元数据、长会话压缩与思考展示）
 
-Codex 对**自定义 provider 不会请求 `/v1/models`**，它读取本地缓存 `~/.codex/models_cache.json`：该缓存**只有 300 秒有效期**，且必须与客户端版本匹配、每个模型都必须带指令模板。缓存不存在或过期时，Codex 会退回内置的 272k 兜底元数据 —— 表现就是**长会话压缩过晚（撞上下文）**、**思考过程不展示**。
+Codex 对**自定义 provider 不会请求 `/v1/models`**，它读取本地缓存 `~/.codex/models_cache.json`（或者用 `model_catalog_json` 指向的静态目录）：动态缓存**只有 300 秒有效期**，且必须与客户端版本匹配、每个模型都必须带指令模板。缓存不存在或过期时，Codex 会退回内置的 272k 兜底元数据 —— 表现就是**长会话压缩过晚（撞上下文）**、**思考过程不展示**。
+
+只要 Codex 拿到 9router 的模型目录，就能读到统一的 `contextWindow=1000000` 和 `auto_compact_token_limit=900000`。长会话的自动压缩链路是：Codex 依据每次响应的 usage 判断是否压缩，在 900K 附近发起压缩请求（`_compact`，服务端放行并端到端桥接 compaction 协议项，返回的压缩结果必须是完整摘要，否则判定失败并保留原历史），压缩完成后继续原任务。服务端不会用本地估算提前拒绝请求，也不把 900K 压缩线当成硬拒绝线。
 
 **推荐做法（一次安装、永久生效）：把模型目录"内置"进客户端**——生成一份静态目录文件，再用一行配置指向它。它没有 300 秒过期问题，也不需要运行时常驻脚本：
 
@@ -286,13 +341,16 @@ env_key = "NINER_KEY"
 wire_api = "responses"
 ```
 
-因为缓存 300 秒即过期，建议**每次启动 Codex 前跑一次刷新脚本**（放进 shell 别名或启动包装脚本）。
+（动态缓存路径才有 300 秒过期问题：如果你选了 `models_cache.json` 而不是静态目录，建议每次启动 Codex 前跑一次刷新脚本，放进 shell 别名或启动包装脚本。静态目录不需要。）
+
+思考过程的展示依赖两件事：模型目录里带 `supports_reasoning_summary_parameter` 和推理档位，以及 `config.toml` 中的 `model_reasoning_summary = "detailed"`。9router 会把上游推理内容放进 `summary[1]`，并在 `summary[0]` 放一个固定表头，这样 Codex 会把思考过程渲染成**可展开**的块，而不是一行状态文字；这个表头在下一轮请求回传时会被剥离，不会污染模型历史。
 
 验证是否生效（应为 `0`）：
 
 ```bash
 RUST_LOG=codex_models_manager=warn codex exec --json "hello" 2>&1 >/dev/null | grep -c "fallback model metadata"
 ```
+
 ## Docker 部署
 
 ### 时区（可选）
@@ -350,6 +408,7 @@ docker run -d \
   -e QODER_TIMEOUT_MAX_ATTEMPTS=3 \
   -e QODER_TIMEOUT_BASE_DELAY_MS=3000 \
   -e QODER_TIMEOUT_MAX_DELAY_MS=15000 \
+  -e QODER_AUTO_CONTINUE_MAX=1 \
   -e QODER_STREAM_TIMEOUT_MS=600000 \
   -e QODER_STALL_TIMEOUT_MS=600000 \
   9router-qoder-plus:latest
@@ -393,6 +452,7 @@ services:
       QODER_TIMEOUT_MAX_ATTEMPTS: "3"
       QODER_TIMEOUT_BASE_DELAY_MS: "3000"
       QODER_TIMEOUT_MAX_DELAY_MS: "15000"
+      QODER_AUTO_CONTINUE_MAX: "1"
       QODER_STREAM_TIMEOUT_MS: "600000"
       QODER_STALL_TIMEOUT_MS: "600000"
 ```
@@ -434,7 +494,6 @@ sudo docker run -d \
   --restart unless-stopped \
   -p 20128:20128 \
   -v "$HOME/.9router:/app/data" \
-  -v /usr/share/zoneinfo/Asia/Shanghai:/etc/localtime:ro \
   -e DATA_DIR=/app/data \
   -e HOSTNAME=0.0.0.0 \
   -e PORT=20128 \
@@ -448,6 +507,7 @@ sudo docker run -d \
   -e QODER_TIMEOUT_MAX_ATTEMPTS=3 \
   -e QODER_TIMEOUT_BASE_DELAY_MS=3000 \
   -e QODER_TIMEOUT_MAX_DELAY_MS=15000 \
+  -e QODER_AUTO_CONTINUE_MAX=1 \
   -e QODER_STREAM_TIMEOUT_MS=600000 \
   -e QODER_STALL_TIMEOUT_MS=600000 \
   9router-qoder-plus:latest
@@ -520,30 +580,35 @@ docker exec -it 9router sh
 
 ```bash
 npm install
-PORT=20128 NEXT_PUBLIC_BASE_URL=http://localhost:20128 npm run dev
+npm run dev          # 默认监听 20127，打开 http://localhost:20127
 ```
+
+`npm run dev` / `npm run start` 都固定使用 20127，避免和 Docker 里常用的 20128 冲突；需要换端口时用 `npm run dev -- --port 20128` 覆盖。
 
 生产构建：
 
 ```bash
 npm run build
-PORT=20128 HOSTNAME=0.0.0.0 NEXT_PUBLIC_BASE_URL=http://localhost:20128 npm run start
+npm run start -- --hostname 0.0.0.0 --port 20128
 ```
 
-相关单测：
+相关单测（vitest 现在是根 devDependency，一次 `npm install` 即可）：
 
 ```bash
-npm --prefix tests install
-npm --prefix tests test -- \
-  unit/model-idle-alert.test.js \
-  unit/qoder-quota.test.js \
-  unit/qoder-glm52-model.test.js \
-  unit/api-key-policy.test.js \
-  unit/api-key-policy-auth.test.js \
-  unit/api-key-policy-db.test.js \
+# 全量回归：只对"新增失败"报红，既有失败保存在 tests/__baseline__/known-fails.txt（CI 同款门禁）
+node tests/scripts/check-baseline.mjs
+
+# 只跑本次相关套件
+npx vitest run --config tests/vitest.config.js \
+  unit/incremental-quota.test.js \
+  unit/quota-query-stream.test.js \
+  unit/request-key-entry.test.js \
+  unit/request-key-history.test.js \
+  unit/request-key-labels.test.js \
+  unit/request-credits-column.test.js \
   unit/api-key-restrictions-modal-source.test.js \
   unit/zh-cn-literals.test.js \
-  unit/antigravity-oauth-client.test.js
+  unit/codex-dashboard-surfaces.test.js
 ```
 
 ## License
