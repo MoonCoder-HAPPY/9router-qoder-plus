@@ -73,6 +73,15 @@ export const ERROR_RULES = [
   { text: "prompt is too long",      noFallback: true },
   { text: "input is too long",       noFallback: true },
   { text: "reduce the length",       noFallback: true },
+  // Transport failures before the first token are not credential faults.
+  // Locking an account for these errors amplifies one dropped socket into a
+  // full-pool outage.
+  { text: "und_err_socket",           noFallback: true },
+  { text: "other side closed",        noFallback: true },
+  { text: "econnreset",               noFallback: true },
+  { text: "epipe",                    noFallback: true },
+  { text: "connection reset",         noFallback: true },
+  { text: "socket hang up",           noFallback: true },
   { text: "no credentials",           cooldownMs: COOLDOWN.long },
   { text: "request not allowed",      cooldownMs: COOLDOWN.short },
   { text: "improperly formed request", cooldownMs: COOLDOWN.long },

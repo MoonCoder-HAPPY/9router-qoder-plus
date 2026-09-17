@@ -58,6 +58,13 @@ const QUEUE_RETRY = {
   maxDelayMs: Number(process.env.QODER_QUEUE_MAX_DELAY_MS) || 60000,
 };
 const QODER_KEEPALIVE_MS = Number(process.env.QODER_KEEPALIVE_MS) || 10000;
+const QODER_NETWORK_RETRY_MAX_ATTEMPTS = 1;
+
+const QODER_SOCKET_ERROR_CODES = new Set([
+  "UND_ERR_SOCKET",
+  "ECONNRESET",
+  "EPIPE",
+]);
 
 // First-token 504 policy (spec §16.6 / codexCompat.firstTokenTimeoutFallback):
 //   account-then-budget  one quick in-account retry, then a single extended-budget
@@ -164,6 +171,217 @@ function parseQueueInfoText(text) {
     text.includes("10605");
   const m = text.match(/queueCount[\\"]*:?\s*(\d+)/);
   return { queued, queueCount: m ? Number(m[1]) : null };
+}
+
+function errorChain(error) {
+  const chain = [];
+  const seen = new Set();
+  let current = error;
+  while (current && typeof current === "object" && !seen.has(current) && chain.length < 5) {
+    seen.add(current);
+    chain.push(current);
+    current = current.cause;
+  }
+  return chain;
+}
+
+function isQoderSocketCloseError(error, signal = null) {
+  if (signal?.aborted || error?.name === "AbortError") return false;
+  const chain = errorChain(error);
+  if (chain.some((item) => QODER_SOCKET_ERROR_CODES.has(String(item?.code || "").toUpperCase()))) {
+    return true;
+  }
+  const message = chain
+    .map((item) => item?.message || "")
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return (
+    message.includes("other side closed") ||
+    message.includes("socket hang up") ||
+    message.includes("connection reset")
+  );
+}
+
+function formatQoderSocketError(error) {
+  const chain = errorChain(error);
+  const code = chain.map((item) => item?.code).find(Boolean);
+  const message = chain.map((item) => item?.message).filter(Boolean).join(": ");
+  return [code, message].filter(Boolean).join(": ") || "upstream socket closed";
+}
+
+function createQoderNetworkRetryResponse({
+  initialError,
+  model,
+  signal,
+  log,
+  doFetch,
+  inspectCtx = {},
+  continueFetch = null,
+  metrics = null,
+  hasTools = false,
+  maxContinuations = QODER_AUTO_CONTINUE_MAX,
+  timeoutRetryOptions = TIMEOUT_RETRY,
+  maxAttempts = QODER_NETWORK_RETRY_MAX_ATTEMPTS,
+  keepaliveMs = QODER_KEEPALIVE_MS,
+}) {
+  const encoder = new TextEncoder();
+  let stopped = false;
+  let keepaliveTimer = null;
+  let currentReader = null;
+
+  return new Response(
+    new ReadableStream({
+      async start(controller) {
+        const write = (value) => {
+          if (stopped) return;
+          try {
+            controller.enqueue(typeof value === "string" ? encoder.encode(value) : value);
+          } catch {
+            stopped = true;
+          }
+        };
+        const keepalive = () => write(`: qoder network retry keepalive ${Date.now()}\n\n`);
+        const writeSocketError = (error) => {
+          const detail = formatQoderSocketError(error);
+          const frame = JSON.stringify({
+            error: {
+              message: `${model}: upstream connection closed before the first token after ${maxAttempts} internal retry (${detail})`,
+              type: "server_error",
+              code: "server_is_overloaded",
+            },
+          });
+          write(`data: ${frame}\n\n${SSE_DONE}`);
+        };
+
+        keepalive();
+        keepaliveTimer = setInterval(keepalive, Math.max(1000, keepaliveMs));
+
+        let lastError = initialError;
+        try {
+          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            if (signal?.aborted) throw signal.reason || new DOMException("The operation was aborted", "AbortError");
+            log?.warn?.(
+              "QODER",
+              `upstream socket closed before response (${formatQoderSocketError(lastError)}), retry ${attempt}/${maxAttempts} with fresh request identity`,
+            );
+
+            let response;
+            try {
+              response = await doFetch(true);
+            } catch (error) {
+              if (signal?.aborted || error?.name === "AbortError") throw error;
+              lastError = error;
+              if (isQoderSocketCloseError(error, signal) && attempt < maxAttempts) continue;
+              writeSocketError(error);
+              return;
+            }
+
+            const inspected = await inspectQoderResponse(response, inspectCtx);
+            if (inspected.queued) {
+              const queued = createQoderQueueRetryResponse({
+                initialQueueInfo: inspected,
+                model,
+                signal,
+                log,
+                doFetch,
+                timeoutRetryOptions,
+                inspectCtx,
+                continueFetch,
+                metrics,
+                hasTools,
+                maxContinuations,
+              });
+              currentReader = queued.body?.getReader() || null;
+              if (!currentReader) {
+                writeSocketError(new Error("queue retry returned an empty stream"));
+                return;
+              }
+              while (!stopped) {
+                const { done, value } = await currentReader.read();
+                if (done) break;
+                write(value);
+              }
+              return;
+            }
+
+            if (!inspected.response?.ok || inspected.errorInfo) {
+              let message = `upstream status ${inspected.response?.status || 502}`;
+              if (inspected.errorInfo) {
+                message = formatQoderErrorMessage(inspected.errorInfo, inspectCtx);
+              } else {
+                try {
+                  const text = await inspected.response.text();
+                  if (text) message = text;
+                } catch {}
+              }
+              const frame = JSON.stringify({
+                error: {
+                  message: truncate(message, 1600),
+                  type: "server_error",
+                  code: resolveCodexErrorCode({
+                    status: inspected.response?.status,
+                    message,
+                    fallbackCode: "upstream_error",
+                  }),
+                },
+              });
+              write(`data: ${frame}\n\n${SSE_DONE}`);
+              return;
+            }
+
+            const wrapped = wrapQoderSSE(inspected.response, model, {
+              metrics,
+              continueFetch,
+              hasTools,
+              maxContinuations,
+              log,
+            });
+            if (!wrapped.body) {
+              writeSocketError(new Error("upstream returned an empty stream"));
+              return;
+            }
+            currentReader = wrapped.body.getReader();
+            while (!stopped) {
+              const { done, value } = await currentReader.read();
+              if (done) break;
+              write(value);
+            }
+            return;
+          }
+          writeSocketError(lastError);
+        } catch (error) {
+          if (!stopped) controller.error(error);
+          stopped = true;
+        } finally {
+          if (keepaliveTimer) {
+            clearInterval(keepaliveTimer);
+            keepaliveTimer = null;
+          }
+          if (!stopped) controller.close();
+        }
+      },
+      async cancel(reason) {
+        stopped = true;
+        if (keepaliveTimer) {
+          clearInterval(keepaliveTimer);
+          keepaliveTimer = null;
+        }
+        try {
+          await currentReader?.cancel(reason);
+        } catch {}
+      },
+    }),
+    {
+      status: 200,
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      },
+    },
+  );
 }
 
 // ============ 9router-fix: upstream error envelopes ============
@@ -1424,7 +1642,31 @@ export class QoderExecutor extends BaseExecutor {
     };
     const autoContinueMax = await resolveAutoContinueMax();
     const timeoutPolicy = await resolveTimeoutPolicyForRequest({ log });
-    let response = await doFetch();
+    let response;
+    try {
+      response = await doFetch();
+    } catch (error) {
+      if (!isQoderSocketCloseError(error, signal)) throw error;
+      const retrying = createQoderNetworkRetryResponse({
+        initialError: error,
+        model: `qoder/${qoderKey}`,
+        signal,
+        log,
+        doFetch,
+        inspectCtx,
+        continueFetch,
+        metrics,
+        hasTools: Array.isArray(body.tools) && body.tools.length > 0,
+        maxContinuations: autoContinueMax,
+        timeoutRetryOptions: timeoutPolicy.timeoutOptions,
+      });
+      return {
+        response: retrying,
+        url,
+        headers: currentAttemptRequest.headers,
+        transformedBody: currentAttemptRequest.payload,
+      };
+    }
     const inspected = await inspectQoderResponse(response, inspectCtx);
 
     if (inspected.errorInfo) {
@@ -1452,7 +1694,6 @@ export class QoderExecutor extends BaseExecutor {
         metrics,
         hasTools: Array.isArray(body.tools) && body.tools.length > 0,
         maxContinuations: autoContinueMax,
-      timeoutRetryOptions: timeoutPolicy.timeoutOptions,
       });
       return {
         response: queued,
@@ -1536,6 +1777,8 @@ export const __test__ = {
   wrapQoderSSE,
   buildQoderRequestBody,
   createQoderQueueRetryResponse,
+  createQoderNetworkRetryResponse,
+  isQoderSocketCloseError,
   inspectQoderResponse,
   classifyQoderEnvelopeError,
   formatQoderErrorMessage,
