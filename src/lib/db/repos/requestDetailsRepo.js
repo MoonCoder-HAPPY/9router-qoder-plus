@@ -90,6 +90,10 @@ async function flushToDatabase() {
             provider: item.provider || null,
             model: item.model || null,
             connectionId: item.connectionId || null,
+            ...(Object.hasOwn(item, "apiKeyId") ? {
+              apiKeyId: item.apiKeyId,
+              apiKeyName: item.apiKeyName ?? null,
+            } : {}),
             timestamp: item.timestamp,
             status: item.status || null,
             latency: item.latency || {},
@@ -151,6 +155,10 @@ export async function getRequestDetails(filter = {}) {
   if (filter.provider) { conds.push("provider = ?"); params.push(filter.provider); }
   if (filter.model) { conds.push("model = ?"); params.push(filter.model); }
   if (filter.connectionId) { conds.push("connectionId = ?"); params.push(filter.connectionId); }
+  if (filter.apiKeyId) {
+    conds.push("json_extract(CASE WHEN json_valid(data) THEN data ELSE '{}' END, '$.apiKeyId') = ?");
+    params.push(filter.apiKeyId);
+  }
   if (filter.status) { conds.push("status = ?"); params.push(filter.status); }
   if (filter.startDate) { conds.push("timestamp >= ?"); params.push(new Date(filter.startDate).toISOString()); }
   if (filter.endDate) { conds.push("timestamp <= ?"); params.push(new Date(filter.endDate).toISOString()); }
@@ -170,8 +178,24 @@ export async function getRequestDetails(filter = {}) {
   );
   const details = rows.map((r) => parseJson(r.data, {}));
 
+  // Project only identity fields from the retained history, independently of filters.
+  const identities = db.all(`
+    SELECT json_extract(data, '$.apiKeyId') AS id,
+           json_extract(data, '$.apiKeyName') AS name
+    FROM requestDetails
+    WHERE CASE WHEN json_valid(data) THEN json_type(data, '$.apiKeyId') END = 'text'
+    ORDER BY timestamp DESC, rowid DESC
+  `);
+  const latestIdentities = new Map();
+  for (const identity of identities) {
+    if (identity.id && !latestIdentities.has(identity.id)) {
+      latestIdentities.set(identity.id, { id: identity.id, name: identity.name ?? null });
+    }
+  }
+
   return {
     details,
+    apiKeys: [...latestIdentities.values()],
     pagination: { page, pageSize, totalItems, totalPages, hasNext: page < totalPages, hasPrev: page > 1 },
   };
 }

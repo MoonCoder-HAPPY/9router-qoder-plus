@@ -12,6 +12,7 @@ import {
   sumQoderRemainingQuota,
 } from "@/shared/services/apiKeyPolicy.js";
 import { getUsageForProvider } from "open-sse/services/usage.js";
+import { queryQuotaAccounts, quotaEventResponse } from "@/shared/services/quotaQuery.js";
 
 export const dynamic = "force-dynamic";
 
@@ -43,7 +44,8 @@ export function buildQoderKeyUsageState(policy, accounts) {
   const currentRemainingByConnectionId = Object.fromEntries(
     (qoderPolicy.connectionIds || []).map((connectionId) => {
       const account = accountMap.get(connectionId);
-      const unavailable = !account || account.quotaStatus === "unavailable";
+      const unavailable = !account || (account.quotaStatus != null && account.quotaStatus !== "ok")
+        || account.remainingQuota == null || !Number.isFinite(Number(account.remainingQuota));
       return [
         connectionId,
         {
@@ -81,100 +83,63 @@ export function buildQoderKeyUsageByKeyId(keys, accounts) {
   );
 }
 
-export async function buildQoderQuotaOptions({ excludeKeyId = null } = {}) {
-  const [connections, keys, allConnections] = await Promise.all([
-    getProviderConnections({ provider: "qoder", isActive: true }),
-    getApiKeys(),
-    getProviderConnections({ provider: "qoder" }),
+export async function buildQoderQuotaOptions({ excludeKeyId = null, connectionIds = null, signal, emit } = {}) {
+  const [allConnections, keys] = await Promise.all([
+    getProviderConnections({ provider: "qoder" }), getApiKeys(),
   ]);
-  const connectionNameById = Object.fromEntries(
-    (allConnections || []).map((connection) => [connection.id, getConnectionName(connection)])
-  );
-  const otherPolicies = keys
-    .filter((key) => key.id !== excludeKeyId)
-    .map((key) => key.policy)
-    .filter((policy) => policy?.enabled);
-
-  const accounts = [];
-  for (const connection of connections) {
-    let remainingQuota = 0;
-    let quotaRows = [];
-    let quotaStatus = "ok";
-    let quotaMessage = null;
-    try {
-      const proxyConfig = await resolveConnectionProxyConfig(connection.providerSpecificData);
-      const usage = await getUsageForProvider(connection, {
-        connectionProxyEnabled: proxyConfig.connectionProxyEnabled === true,
-        connectionProxyUrl: proxyConfig.connectionProxyUrl || "",
-        connectionNoProxy: proxyConfig.connectionNoProxy || "",
-        vercelRelayUrl: proxyConfig.vercelRelayUrl || "",
-        strictProxy: false,
-      });
-      if (usage?.message || usage?.error) {
-        quotaStatus = "unavailable";
-        quotaMessage = usage.message || usage.error;
-        remainingQuota = null;
-      } else {
-        const summed = sumQoderRemainingQuota(usage);
-        remainingQuota = summed.remaining;
-        quotaRows = summed.rows;
-      }
-    } catch (error) {
-      quotaStatus = "unavailable";
-      quotaMessage = error.message;
-      remainingQuota = null;
-    }
-
+  if (signal?.aborted) return;
+  const currentKey = keys.find(key => key.id === excludeKeyId);
+  const currentPolicy = getProviderPolicy(currentKey?.policy, "qoder");
+  const selectedIds = connectionIds ?? currentPolicy?.connectionIds ?? [];
+  const selected = new Set(selectedIds);
+  const connections = allConnections.filter(connection => connection.isActive !== false
+    && (connectionIds === null || selected.has(connection.id)));
+  const otherPolicies = keys.filter(key => key.id !== excludeKeyId && key.policy?.enabled).map(key => key.policy);
+  const accounts = connections.map(connection => ({
+    id: connection.id, name: getConnectionName(connection), email: connection.email || null,
+    remainingQuota: null, quotaRows: [], quotaStatus: "loading", quotaMessage: null,
+    allocatedToOtherKeys: getAllocatedToAccount(otherPolicies, connection.id),
+  }));
+  for (const id of selectedIds) {
+    if (accounts.some(account => account.id === id)) continue;
     accounts.push({
-      id: connection.id,
-      name: getConnectionName(connection),
-      email: connection.email || null,
-      remainingQuota,
-      quotaRows,
-      quotaStatus,
-      quotaMessage,
-      allocatedToOtherKeys: getAllocatedToAccount(otherPolicies, connection.id),
+      id, name: getConnectionName(allConnections.find(connection => connection.id === id) || { id }),
+      email: null, remainingQuota: null, quotaRows: [], quotaStatus: "missing", quotaMessage: null,
+      allocatedToOtherKeys: getAllocatedToAccount(otherPolicies, id),
     });
   }
-
-  const currentKey = keys.find((key) => key.id === excludeKeyId) || null;
-  // Surface "ghost" allocations: accounts this key still references but that
-  // are no longer active Qoder connections. Without these rows the modal
-  // cannot show (or let the user remove) the allocation that makes validation
-  // fail, which reads as an unexplained aggregate error.
-  if (currentKey) {
-    const currentQoderPolicy = getProviderPolicy(currentKey.policy, "qoder");
-    const knownIds = new Set(accounts.map((account) => account.id));
-    for (const connectionId of currentQoderPolicy?.connectionIds || []) {
-      if (knownIds.has(connectionId)) continue;
-      accounts.push({
-        id: connectionId,
-        name: connectionNameById[connectionId] || `${connectionId.slice(0, 8)}…`,
-        email: null,
-        remainingQuota: 0,
-        quotaRows: [],
-        quotaStatus: "missing",
-        quotaMessage: null,
-        allocatedToOtherKeys: getAllocatedToAccount(otherPolicies, connectionId),
-      });
-    }
-  }
-  return {
-    providers: {
-      qoder: {
-        accounts,
-        keyUsage: buildQoderKeyUsageState(currentKey?.policy, accounts),
-        keyUsageByKeyId: buildQoderKeyUsageByKeyId(keys, accounts),
-      },
-    },
-  };
+  const options = () => ({ providers: { qoder: {
+    accounts,
+    keyUsage: buildQoderKeyUsageState(currentKey?.policy, accounts),
+    keyUsageByKeyId: buildQoderKeyUsageByKeyId(keys, accounts),
+  } } });
+  emit?.({ type: "snapshot", policy: currentKey?.policy || null, ...options() });
+  const queue = [...connections].sort((a, b) => Number(selected.has(b.id)) - Number(selected.has(a.id)));
+  await queryQuotaAccounts(queue, async (connection, querySignal) => {
+    const proxyConfig = await resolveConnectionProxyConfig(connection.providerSpecificData);
+    if (querySignal.aborted) throw querySignal.reason;
+    const usage = await getUsageForProvider(connection, {
+      ...proxyConfig, strictProxy: false, signal: querySignal,
+    });
+    if (usage?.message || usage?.error) throw new Error(usage.message || usage.error);
+    const summed = sumQoderRemainingQuota(usage);
+    if (!summed.rows.length) throw new Error("Qoder quota is unavailable");
+    return { remainingQuota: summed.remaining, quotaRows: summed.rows, quotaStatus: "ok", quotaMessage: null };
+  }, (connection, result) => {
+    const index = accounts.findIndex(account => account.id === connection.id);
+    accounts[index] = { ...accounts[index], ...result };
+    emit?.({ type: "account", account: accounts[index], keyUsage: buildQoderKeyUsageState(currentKey?.policy, accounts) });
+  }, { signal });
+  if (!signal?.aborted) emit?.({ type: "complete" });
+  return options();
 }
 
 export function validateQoderPolicyAllocation(policy, quotaOptions, otherPolicies, existingPolicy = null) {
   const qoderPolicy = getProviderPolicy(policy, "qoder");
-  if (!qoderPolicy || qoderPolicy.allocationLimit === null || qoderPolicy.allocationLimit === undefined) {
+  if (!qoderPolicy) {
     return { ok: true };
   }
+  if (qoderPolicy.connectionIds.length === 0) return { ok: false, error: "Select at least one Qoder account" };
   const accounts = quotaOptions?.providers?.qoder?.accounts || [];
   const accountRemainingById = Object.fromEntries(accounts.map((account) => [account.id, account.remainingQuota || 0]));
   const existingQoderPolicy = getProviderPolicy(existingPolicy, "qoder");
@@ -192,7 +157,8 @@ export function validateQoderPolicyAllocation(policy, quotaOptions, otherPolicie
   }
   const selectedConnectionIds = qoderPolicy.connectionIds;
   const hasUnavailableSelected = accounts.some((account) =>
-    selectedConnectionIds.includes(account.id) && account.quotaStatus === "unavailable"
+    selectedConnectionIds.includes(account.id) && account.quotaStatus !== "missing"
+      && (account.quotaStatus !== "ok" || account.remainingQuota == null || !Number.isFinite(Number(account.remainingQuota)))
   );
   if (hasUnavailableSelected) {
     return { ok: false, error: "Unable to validate selected Qoder account quota right now" };
@@ -218,7 +184,7 @@ export function validateQoderPolicyAllocation(policy, quotaOptions, otherPolicie
     const maxAssignable = Math.max(0, selectedPool - allocatedToOtherKeys);
     const requested = getAccountAllocationLimit(qoderPolicy, connectionId);
     perAccount[connectionId] = { selectedPool, allocatedToOtherKeys, maxAssignable, requested };
-    if (requested > maxAssignable) {
+    if (requested > maxAssignable || !accountById[connectionId] || accountById[connectionId].quotaStatus === "missing") {
       hasExceeded = true;
       exceededAccounts.push({
         connectionId,
@@ -246,8 +212,14 @@ export function validateQoderPolicyAllocation(policy, quotaOptions, otherPolicie
 export async function GET(request) {
   try {
     const { searchParams } = new URL(request.url);
+    if (searchParams.get("stream") === "1") {
+      return quotaEventResponse((emit, signal) => buildQoderQuotaOptions({
+        excludeKeyId: searchParams.get("excludeKeyId") || null, emit, signal,
+      }), request.signal);
+    }
     return NextResponse.json(await buildQoderQuotaOptions({
       excludeKeyId: searchParams.get("excludeKeyId") || null,
+      signal: request.signal,
     }));
   } catch (error) {
     console.log("Error fetching quota options:", error);

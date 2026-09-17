@@ -15,13 +15,14 @@ describe("Codex UX surfaces in the dashboard", () => {
     }
   });
 
-  it("exposes every Codex compatibility control on the profile page", () => {
-    expect(profilePage).toContain("Codex Compatibility");
+  it("keeps only effective retry controls on the profile page", () => {
+    expect(profilePage).toContain("Request retries and recovery");
+    expect(profilePage).not.toContain("Codex Compatibility");
+    expect(profilePage).not.toContain("compacts losslessly");
+    for (const label of ["Proactive context guard", "Compaction ratio", "Compaction floor", "Compaction ceiling"]) {
+      expect(profilePage).not.toContain(label);
+    }
     for (const field of [
-      "proactiveContextGuard",
-      "autoCompactRatio",
-      "autoCompactMin",
-      "autoCompactMax",
       "autoContinueMax",
       "firstTokenTimeoutFallback",
     ]) {

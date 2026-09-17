@@ -64,6 +64,10 @@ export function buildRequestDetail(base, overrides = {}) {
     provider: base.provider || "unknown",
     model: base.model || "unknown",
     connectionId: base.connectionId || undefined,
+    ...(base.apiKeyIdentity ? {
+      apiKeyId: base.apiKeyIdentity.apiKeyId,
+      apiKeyName: base.apiKeyIdentity.apiKeyName,
+    } : {}),
     timestamp: new Date().toISOString(),
     latency: base.latency || { ttft: 0, total: 0 },
     tokens: base.tokens || { prompt_tokens: 0, completion_tokens: 0 },

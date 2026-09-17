@@ -19,9 +19,9 @@ describe("ApiKeyRestrictionsModal interaction source", () => {
     expect(MODAL_SOURCE).not.toContain("onClick={() => toggleConnection(account.id)}");
   });
 
-  it("uses stable account order until priority is explicitly edited", () => {
-    expect(MODAL_SOURCE).toContain("priorityEdited");
-    expect(MODAL_SOURCE).toContain("sortSelectedByAccountList");
-    expect(MODAL_SOURCE).toContain("setPriorityEdited(true)");
+  it("appends new selections without changing existing priority or form inputs", () => {
+    expect(MODAL_SOURCE).toContain("priorityOrder = [...prev.priorityOrder, id]");
+    expect(MODAL_SOURCE).not.toContain("sortSelectedByAccountList");
+    expect(MODAL_SOURCE).toContain('aria-label={translate("Remove allocation")}');
   });
 });

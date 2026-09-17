@@ -42,8 +42,12 @@ export async function PUT(request, { params }) {
     if (policy !== undefined) {
       const normalizedPolicy = normalizeApiKeyPolicy(policy);
       if (normalizedPolicy.enabled) {
+        const selectedIds = getProviderPolicy(normalizedPolicy, "qoder")?.connectionIds || [];
+        if (selectedIds.length === 0) {
+          return NextResponse.json({ error: "Select at least one Qoder account" }, { status: 400 });
+        }
         const [quotaOptions, otherPolicies] = await Promise.all([
-          buildQoderQuotaOptions({ excludeKeyId: id }),
+          buildQoderQuotaOptions({ excludeKeyId: id, connectionIds: selectedIds, signal: request.signal }),
           getOtherApiKeyPolicies(id),
         ]);
         const validation = validateQoderPolicyAllocation(normalizedPolicy, quotaOptions, otherPolicies, existing.policy);
@@ -58,8 +62,13 @@ export async function PUT(request, { params }) {
             const capturedAt = new Date().toISOString();
             normalizedPolicy.providers.qoder = {
               ...normalizedPolicy.providers.qoder,
-              startedAt: capturedAt,
-              quotaBaseline: buildQoderQuotaBreakdownBaseline(accounts, qoderPolicy.connectionIds, capturedAt),
+              startedAt: previousQoderPolicy?.startedAt || capturedAt,
+              quotaBaseline: Object.fromEntries(Object.entries(
+                buildQoderQuotaBreakdownBaseline(accounts, qoderPolicy.connectionIds, capturedAt)
+              ).map(([connectionId, baseline]) => [connectionId,
+                previousQoderPolicy?.connectionIds?.includes(connectionId)
+                  ? previousQoderPolicy.quotaBaseline?.[connectionId] || baseline : baseline,
+              ])),
               creditUsageLedger: preserveQoderCreditUsageLedger(previousQoderPolicy, qoderPolicy),
             };
           } else {

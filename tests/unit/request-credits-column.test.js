@@ -178,12 +178,12 @@ describe("Credits Used column — dashboard surface", () => {
     expect(tooltip).toContain("left-1/2 -translate-x-1/2");
   });
 
-  it("spans every column in the loading and empty rows", () => {
-    // Ten columns once Credits Used exists; a stale span leaves a ragged table.
+  it("spans every column in the loading, error and empty rows", () => {
     const spans = detailsTab.match(/colSpan="(\d+)"/g) || [];
     const headerCells = (detailsTab.slice(detailsTab.indexOf("<thead>"), detailsTab.indexOf("</thead>")).match(/<th[\s>]/g) || []).length;
-    expect(headerCells).toBe(10);
-    expect(spans).toEqual(['colSpan="10"', 'colSpan="10"']);
+    expect(headerCells).toBe(11);
+    expect(spans).toHaveLength(3);
+    expect(spans.every(span => span === `colSpan="${headerCells}"`)).toBe(true);
   });
 
   it("reads the value through the shared helper so non-Qoder rows stay empty", () => {

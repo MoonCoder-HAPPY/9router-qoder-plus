@@ -9,6 +9,13 @@ import { getQoderUsage } from "../../open-sse/services/usage/misc.js";
 import { parseQuotaData } from "@/app/(dashboard)/dashboard/usage/components/ProviderLimits/utils.js";
 
 describe("Qoder quota usage", () => {
+  it("passes cancellation through to the upstream quota request", async () => {
+    const controller = new AbortController();
+    proxyAwareFetch.mockResolvedValueOnce(new Response(JSON.stringify({ userQuota: { total: 1, remaining: 1 } })));
+    await getQoderUsage("test-token", { signal: controller.signal });
+    expect(proxyAwareFetch.mock.lastCall[1].signal).toBe(controller.signal);
+  });
+
   it("surfaces Qoder organization resource package cap as a dashboard quota row", async () => {
     proxyAwareFetch.mockResolvedValueOnce(new Response(JSON.stringify({
       userQuota: {

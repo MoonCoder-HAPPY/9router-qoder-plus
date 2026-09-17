@@ -215,6 +215,7 @@ export async function getQoderUsage(accessToken, proxyOptions = null) {
       U("qoder").url,
       {
         method: "GET",
+        signal: proxyOptions?.signal,
         headers: {
           Authorization: `Bearer ${accessToken}`,
           Accept: "application/json",

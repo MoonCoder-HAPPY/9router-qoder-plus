@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import PropTypes from "prop-types";
 import { Button, ConfirmModal, Input, Modal, Toggle } from "@/shared/components";
 import { translate } from "@/i18n/runtime";
+import { readQuotaEvents } from "@/shared/services/quotaStreamClient.js";
 
 function normalizeEditablePolicy(policy) {
   const qoder = policy?.providers?.qoder || {};
@@ -27,12 +28,8 @@ function normalizeEditablePolicy(policy) {
   };
 }
 
-function hasExplicitPriority(policy) {
-  const qoder = policy?.providers?.qoder;
-  return Array.isArray(qoder?.priorityOrder) && qoder.priorityOrder.length > 0;
-}
-
 function formatNumber(value) {
+  if (value == null || !Number.isFinite(Number(value))) return translate("Not ready");
   const n = Number(value) || 0;
   return new Intl.NumberFormat().format(n);
 }
@@ -50,6 +47,7 @@ function getExistingConsumedByAccount(policy, accountId, remainingQuota) {
 }
 
 function getAssignableCreditsForAccount(policy, account) {
+  if (account.quotaStatus !== "ok") return null;
   const preservedConsumed = getExistingConsumedByAccount(policy, account.id, account.remainingQuota);
   return Math.max(
     0,
@@ -59,6 +57,7 @@ function getAssignableCreditsForAccount(policy, account) {
 
 function getAccountUsageDisplay(policy, account, allocationValue) {
   const allocated = Number(allocationValue) || 0;
+  if (account.quotaStatus !== "ok") return { allocated, used: null, remaining: null, exhausted: false };
   const used = getExistingConsumedByAccount(policy, account.id, account.remainingQuota);
   const remaining = Math.max(0, allocated - used);
   return {
@@ -69,15 +68,9 @@ function getAccountUsageDisplay(policy, account, allocationValue) {
   };
 }
 
-function sortSelectedByAccountList(selectedIds, accounts) {
-  const selected = new Set(selectedIds);
-  const ordered = accounts.map((account) => account.id).filter((id) => selected.has(id));
-  return [...ordered, ...selectedIds.filter((id) => !ordered.includes(id))];
-}
-
 export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, onSaved }) {
+  const session = useRef(0);
   const [form, setForm] = useState(() => normalizeEditablePolicy(apiKeyItem?.policy));
-  const [priorityEdited, setPriorityEdited] = useState(() => hasExplicitPriority(apiKeyItem?.policy));
   const [quotaOptions, setQuotaOptions] = useState(null);
   const [loadingOptions, setLoadingOptions] = useState(() => isOpen && !!apiKeyItem);
   const [saving, setSaving] = useState(false);
@@ -88,20 +81,47 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
 
   useEffect(() => {
     if (!isOpen || !apiKeyItem) return;
+    const generation = ++session.current;
+    const controller = new AbortController();
     let cancelled = false;
-    fetch(`/api/keys/quota-options?excludeKeyId=${encodeURIComponent(apiKeyItem.id)}`, { cache: "no-store" })
+    setForm(normalizeEditablePolicy(apiKeyItem.policy));
+    setQuotaOptions(null);
+    setLoadingOptions(true);
+    setSaving(false);
+    setResettingUsage(false);
+    setConfirmResetUsage(false);
+    setServerExceeded(null);
+    setError("");
+    fetch(`/api/keys/quota-options?stream=1&excludeKeyId=${encodeURIComponent(apiKeyItem.id)}`, { cache: "no-store", signal: controller.signal })
       .then(async (res) => {
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "Failed to load quota options");
-        if (!cancelled) setQuotaOptions(data);
+        await readQuotaEvents(res, (event) => {
+          if (cancelled || session.current !== generation) return;
+          if (event.type === "snapshot") {
+            setQuotaOptions(event);
+            setLoadingOptions(false);
+          } else if (event.type === "account") {
+            setQuotaOptions(previous => previous ? { providers: { qoder: {
+              ...previous.providers.qoder,
+              accounts: previous.providers.qoder.accounts.map(account => account.id === event.account.id ? event.account : account),
+              keyUsage: event.keyUsage,
+            } } } : previous);
+          }
+        }, controller.signal);
       })
       .catch((e) => {
-        if (!cancelled) setError(e.message);
+        if (!cancelled) {
+          setError(e.message);
+          setQuotaOptions(previous => previous ? { providers: { qoder: {
+            ...previous.providers.qoder,
+            accounts: previous.providers.qoder.accounts.map(account => account.quotaStatus === "loading"
+              ? { ...account, quotaStatus: "unavailable", quotaMessage: e.message } : account),
+          } } } : previous);
+        }
       })
       .finally(() => {
         if (!cancelled) setLoadingOptions(false);
       });
-    return () => { cancelled = true; };
+    return () => { cancelled = true; session.current++; controller.abort(); };
   }, [apiKeyItem, isOpen]);
 
   const accounts = useMemo(() => quotaOptions?.providers?.qoder?.accounts || [], [quotaOptions]);
@@ -110,6 +130,8 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
     () => form.connectionIds.map((id) => accountIndex.get(id)).filter(Boolean),
     [accountIndex, form.connectionIds]
   );
+  const selectedReady = !!quotaOptions && form.connectionIds.length > 0
+    && form.connectionIds.every(id => accountIndex.get(id)?.quotaStatus === "ok");
   const priorityAccounts = useMemo(
     () => form.priorityOrder.map((id) => accountIndex.get(id)).filter(Boolean),
     [accountIndex, form.priorityOrder]
@@ -117,10 +139,17 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
   const selectedPool = selectedAccountList.reduce((sum, account) =>
     sum + (Number(account.remainingQuota) || 0) + getExistingConsumedByAccount(apiKeyItem?.policy, account.id, account.remainingQuota), 0);
   const keyUsage = quotaOptions?.providers?.qoder?.keyUsage;
+  // The usage summary belongs to the saved policy, not the editable selection.
+  const savedAccountIds = apiKeyItem?.policy?.providers?.qoder?.connectionIds || [];
+  const usageReady = !!keyUsage?.enabled && savedAccountIds.length > 0
+    && savedAccountIds.every(id => accountIndex.get(id)?.quotaStatus === "ok")
+    && !keyUsage.unavailableConnectionIds?.length;
+  const activeAccountName = usageReady ? (keyUsage.activeAccountName || translate("None")) : translate("Not ready");
   const allocatedElsewhere = selectedAccountList.reduce((sum, account) => sum + (Number(account.allocatedToOtherKeys) || 0), 0);
-  const maxAssignable = Math.max(0, selectedPool - allocatedElsewhere);
+  const maxAssignable = selectedReady ? Math.max(0, selectedPool - allocatedElsewhere) : null;
   const totalAllocation = Object.values(form.accountAllocations).reduce((sum, value) => sum + (Number(value) || 0), 0);
   const allocationTooHigh = form.enabled && selectedAccountList.some((account) => {
+    if (account.quotaStatus !== "ok") return false;
     const requested = Number(form.accountAllocations[account.id]) || 0;
     const preservedConsumed = getExistingConsumedByAccount(apiKeyItem?.policy, account.id, account.remainingQuota);
     const assignable = Math.max(
@@ -142,10 +171,7 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
         return { ...prev, connectionIds: [...selected], priorityOrder, accountAllocations };
       } else {
         selected.add(id);
-        const selectedIds = [...selected];
-        priorityOrder = priorityEdited
-          ? [...prev.priorityOrder, id]
-          : sortSelectedByAccountList(selectedIds, accounts);
+        priorityOrder = [...prev.priorityOrder, id];
       }
       return {
         ...prev,
@@ -157,7 +183,6 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
   }
 
   function movePriority(id, direction) {
-    setPriorityEdited(true);
     setForm((prev) => {
       const priorityOrder = [...prev.priorityOrder];
       const index = priorityOrder.indexOf(id);
@@ -177,7 +202,8 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
   }
 
   async function save() {
-    if (!apiKeyItem) return;
+    if (!apiKeyItem || saving || (form.enabled && (!selectedReady || allocationTooHigh))) return;
+    const generation = session.current;
     setSaving(true);
     setError("");
     const policy = form.enabled
@@ -204,6 +230,7 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
         body: JSON.stringify({ policy }),
       });
       const data = await res.json();
+      if (session.current !== generation) return;
       if (!res.ok) {
         setServerExceeded(Object.fromEntries((data.exceededAccounts || []).map((item) => [item.connectionId, item])));
         throw new Error(data.error || "Failed to save restrictions");
@@ -211,26 +238,28 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
       setServerExceeded(null);
       onSaved(data.key);
     } catch (e) {
-      setError(e.message);
+      if (session.current === generation) setError(e.message);
     } finally {
-      setSaving(false);
+      if (session.current === generation) setSaving(false);
     }
   }
 
   async function resetUsage() {
     if (!apiKeyItem) return;
+    const generation = session.current;
     setResettingUsage(true);
     setError("");
     try {
       const res = await fetch(`/api/keys/${apiKeyItem.id}/qoder-usage/reset`, { method: "POST" });
       const data = await res.json();
+      if (session.current !== generation) return;
       if (!res.ok) throw new Error(data.error || "Failed to reset Qoder usage");
       setConfirmResetUsage(false);
       onSaved(data.key);
     } catch (e) {
-      setError(e.message);
+      if (session.current === generation) setError(e.message);
     } finally {
-      setResettingUsage(false);
+      if (session.current === generation) setResettingUsage(false);
     }
   }
 
@@ -267,17 +296,17 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
                   <div className="rounded border border-border bg-surface-2 p-2">
                     <p className="text-xs text-text-muted">Used / Total</p>
                     <p className="text-sm font-semibold">
-                      {formatNumber(keyUsage.used)} / {formatNumber(keyUsage.limit)}
+                      {formatNumber(usageReady ? keyUsage.used : null)} / {formatNumber(keyUsage.limit)}
                     </p>
                   </div>
                   <div className="rounded border border-border bg-surface-2 p-2">
                     <p className="text-xs text-text-muted">Remaining</p>
-                    <p className="text-sm font-semibold">{formatNumber(keyUsage.remaining)}</p>
+                    <p className="text-sm font-semibold">{formatNumber(usageReady ? keyUsage.remaining : null)}</p>
                   </div>
                   <div className="rounded border border-border bg-surface-2 p-2 min-w-0">
                     <p className="text-xs text-text-muted">Active Account</p>
-                    <p className="text-sm font-semibold truncate" title={keyUsage.activeAccountName || "None"}>
-                      {keyUsage.activeAccountName || "None"}
+                    <p className="text-sm font-semibold truncate" title={activeAccountName}>
+                      {activeAccountName}
                     </p>
                   </div>
                   <p className="col-span-full text-[11px] leading-snug text-text-muted">
@@ -297,6 +326,7 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
                   return (
                   <div
                     key={account.id}
+                    data-testid={`quota-account-${account.id}`}
                     className="flex gap-3 p-3 border-b border-border last:border-b-0 hover:bg-surface-2/70"
                   >
                     <input
@@ -325,7 +355,7 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
                         </div>
                         <div className="flex items-center gap-1 shrink-0">
                           <p className="text-xs text-text-muted whitespace-nowrap">
-                            {account.quotaStatus === "missing" ? translate("Removed from Qoder") : account.quotaStatus === "unavailable" ? "Unavailable" : (
+                            {account.quotaStatus === "loading" ? translate("Loading...") : account.quotaStatus === "missing" ? translate("Removed from Qoder") : account.quotaStatus === "unavailable" ? "Unavailable" : (
                               <>
                                 <span>{formatNumber(account.remainingQuota)}</span> <span>left</span>
                               </>
@@ -367,7 +397,7 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
                           <span>Assignable</span>: <span>{formatNumber(assignableCredits)}</span>
                         </p>
                       )}
-                      {isSelected && (Number(form.accountAllocations[account.id]) || 0) > assignableCredits && (
+                      {isSelected && assignableCredits !== null && (Number(form.accountAllocations[account.id]) || 0) > assignableCredits && (
                         <p className="text-xs text-red-500 mt-2">
                           <span>{translate("Allocation exceeds assignable")}</span>
                           <span>: </span>
@@ -412,7 +442,7 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
                 <div>
                   {priorityAccounts.map((account, index) => {
                     const usage = getAccountUsageDisplay(apiKeyItem?.policy, account, form.accountAllocations[account.id]);
-                    const isActive = keyUsage?.activeConnectionId === account.id && !usage.exhausted;
+                    const isActive = usageReady && keyUsage?.activeConnectionId === account.id && !usage.exhausted;
                     const rowClassName = usage.exhausted
                       ? "bg-surface-2/80 text-text-muted"
                       : isActive
@@ -421,6 +451,7 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
                     return (
                     <div
                       key={account.id}
+                      data-testid={`quota-priority-${account.id}`}
                       className={`flex items-center gap-3 p-3 border-b border-border last:border-b-0 ${rowClassName}`}
                     >
                       <span className={`shrink-0 inline-flex h-6 min-w-6 items-center justify-center rounded px-1 text-xs font-semibold ${
@@ -480,6 +511,15 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
                         >
                           <span className="material-symbols-outlined text-[18px]">keyboard_arrow_down</span>
                         </button>
+                        <button
+                          type="button"
+                          onClick={() => { toggleConnection(account.id); }}
+                          className="h-8 w-8 rounded text-text-muted hover:bg-surface-3 hover:text-red-500"
+                          title={translate("Remove allocation")}
+                          aria-label={translate("Remove allocation")}
+                        >
+                          <span className="material-symbols-outlined text-[18px]" aria-hidden="true">close</span>
+                        </button>
                       </div>
                     </div>
                     );
@@ -503,6 +543,12 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
               </div>
             </div>
 
+            {form.connectionIds.length === 0 && (
+              <p className="text-sm text-red-500">{translate("Select at least one Qoder account")}</p>
+            )}
+            {form.connectionIds.length > 0 && !selectedReady && (
+              <p className="text-sm text-text-muted">{translate("Selected account quotas are not ready")}</p>
+            )}
             {allocationTooHigh && (
               <p className="text-sm text-red-500">
                 Allocation exceeds the currently assignable Qoder quota.
@@ -539,6 +585,7 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
               type="button"
               variant="danger"
               icon="restart_alt"
+              className="gap-1 whitespace-nowrap px-1.5 sm:gap-2 sm:px-4"
               onClick={() => setConfirmResetUsage(true)}
               disabled={resettingUsage || saving}
               fullWidth
@@ -546,7 +593,7 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
               Reset usage
             </Button>
           )}
-          <Button onClick={save} fullWidth disabled={saving || allocationTooHigh}>
+          <Button onClick={save} fullWidth disabled={saving || resettingUsage || (form.enabled && (!selectedReady || allocationTooHigh))}>
             {saving ? "Saving..." : "Save"}
           </Button>
           <Button onClick={onClose} variant="ghost" fullWidth>

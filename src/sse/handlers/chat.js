@@ -5,7 +5,6 @@ import {
   markAccountUnavailable,
   clearAccountError,
   extractApiKey,
-  isValidApiKey,
   buildApiKeyOptions,
   policyCredentialsResponse,
 } from "../services/auth.js";
@@ -64,6 +63,13 @@ export async function handleChat(request, clientRawRequest = null) {
     log.debug("AUTH", "No API key provided (local mode)");
   }
 
+  // Resolve once at the trusted entry; reuse across combo and account retries.
+  const apiKeyOptions = await buildApiKeyOptions(apiKey);
+  const record = apiKeyOptions.apiKeyRecord;
+  const apiKeyIdentity = record
+    ? Object.freeze({ apiKeyId: record.id, apiKeyName: record.name ?? null })
+    : !apiKey ? Object.freeze({ apiKeyId: null, apiKeyName: null }) : undefined;
+
   // Enforce API key if enabled in settings
   const settings = await getSettings();
   if (settings.requireApiKey) {
@@ -71,7 +77,7 @@ export async function handleChat(request, clientRawRequest = null) {
       log.warn("AUTH", "Missing API key (requireApiKey=true)");
       return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
     }
-    const valid = await isValidApiKey(apiKey);
+    const valid = !!record;
     if (!valid) {
       log.warn("AUTH", "Invalid API key (requireApiKey=true)");
       return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
@@ -107,7 +113,7 @@ export async function handleChat(request, clientRawRequest = null) {
             const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
             cleanRawReq = { ...clientRawRequest, body: cleanBody };
           }
-          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
+          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, apiKeyOptions, apiKeyIdentity);
         },
         log,
         comboName: modelStr,
@@ -121,7 +127,7 @@ export async function handleChat(request, clientRawRequest = null) {
     return handleComboChat({
       body,
       models: comboModels,
-      handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+      handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, apiKeyOptions, apiKeyIdentity),
       log,
       comboName: modelStr,
       comboStrategy,
@@ -130,13 +136,13 @@ export async function handleChat(request, clientRawRequest = null) {
   }
 
   // Single model request
-  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey);
+  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, apiKeyOptions, apiKeyIdentity);
 }
 
 /**
  * Handle single model chat request
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null) {
+async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, apiKeyOptions = {}, apiKeyIdentity) {
   const modelInfo = await getModelInfo(modelStr);
 
   // If provider is null, this might be a combo name - check and handle
@@ -160,7 +166,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
               const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
               cleanRawReq = { ...clientRawRequest, body: cleanBody };
             }
-            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
+            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, apiKeyOptions, apiKeyIdentity);
           },
           log,
           comboName: modelStr,
@@ -174,7 +180,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       return handleComboChat({
         body,
         models: comboModels,
-        handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+        handleSingleModel: (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, apiKeyOptions, apiKeyIdentity),
         log,
         comboName: modelStr,
         comboStrategy,
@@ -196,8 +202,6 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   const excludeConnectionIds = new Set();
   let lastError = null;
   let lastStatus = null;
-  const apiKeyOptions = await buildApiKeyOptions(apiKey);
-
   while (true) {
     const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, apiKeyOptions);
     const policyResponse = policyCredentialsResponse(credentials, errorResponse);
@@ -244,6 +248,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       connectionId: credentials.connectionId,
       userAgent,
       apiKey,
+      apiKeyIdentity,
       ccFilterNaming: !!chatSettings.ccFilterNaming,
       rtkEnabled: !!chatSettings.rtkEnabled,
       headroomEnabled: !!chatSettings.headroomEnabled,

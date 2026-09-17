@@ -9,6 +9,8 @@ import { cn } from "@/shared/utils/cn";
 import { AI_PROVIDERS, getProviderByAlias } from "@/shared/constants/providers";
 import Tooltip from "@/shared/components/Tooltip";
 import { getCreditsCellValue } from "@/shared/utils/requestCredits";
+import { getRequestKeyName, getRequestKeyOptions } from "./requestKeyLabels";
+import { onLocaleChange, translate } from "@/i18n/runtime";
 
 let providerNameCache = null;
 let providerNodesCache = null;
@@ -103,6 +105,10 @@ function getInputTokens(tokens) {
 
 export default function RequestDetailsTab() {
   const [details, setDetails] = useState([]);
+  const [apiKeys, setApiKeys] = useState([]);
+  const [error, setError] = useState(null);
+  const [, setLocaleRevision] = useState(0);
+  useEffect(() => onLocaleChange(() => setLocaleRevision(value => value + 1)), []);
   const [pagination, setPagination] = useState({
     page: 1,
     pageSize: 20,
@@ -115,6 +121,7 @@ export default function RequestDetailsTab() {
   const [providers, setProviders] = useState([]);
   const [providerNameCache, setProviderNameCache] = useState(null);
   const [filters, setFilters] = useState({
+    apiKeyId: "",
     provider: "",
     startDate: "",
     endDate: ""
@@ -133,26 +140,34 @@ export default function RequestDetailsTab() {
     }
   }, []);
 
-  const fetchDetails = useCallback(async () => {
+  const fetchDetails = useCallback(async (signal) => {
     setLoading(true);
+    setError(null);
     try {
       const params = new URLSearchParams({
         page: pagination.page.toString(),
         pageSize: pagination.pageSize.toString()
       });
       if (filters.provider) params.append("provider", filters.provider);
+      if (filters.apiKeyId) params.append("apiKeyId", filters.apiKeyId);
       if (filters.startDate) params.append("startDate", filters.startDate);
       if (filters.endDate) params.append("endDate", filters.endDate);
 
-      const res = await fetch(`/api/usage/request-details?${params}`);
+      const res = await fetch(`/api/usage/request-details?${params}`, { signal });
+      if (!res.ok) throw new Error("Failed to fetch request details");
       const data = await res.json();
+      if (signal.aborted) return;
 
       setDetails(data.details || []);
+      setApiKeys(data.apiKeys || []);
       setPagination(prev => ({ ...prev, ...data.pagination }));
     } catch (error) {
-      console.error("Failed to fetch request details:", error);
+      if (!signal.aborted) {
+        console.error("Failed to fetch request details:", error);
+        setError("Failed to fetch request details");
+      }
     } finally {
-      setLoading(false);
+      if (!signal.aborted) setLoading(false);
     }
   }, [pagination.page, pagination.pageSize, filters]);
 
@@ -161,8 +176,15 @@ export default function RequestDetailsTab() {
   }, [fetchProviders]);
 
   useEffect(() => {
-    fetchDetails();
+    const controller = new AbortController();
+    fetchDetails(controller.signal);
+    return () => controller.abort();
   }, [fetchDetails]);
+
+  const handleFilterChange = (nextFilters) => {
+    setFilters(nextFilters);
+    setPagination(prev => ({ ...prev, page: 1 }));
+  };
 
   const handleViewDetail = (detail) => {
     setSelectedDetail(detail);
@@ -178,19 +200,19 @@ export default function RequestDetailsTab() {
   };
 
   const handleClearFilters = () => {
-    setFilters({ provider: "", startDate: "", endDate: "" });
+    handleFilterChange({ provider: "", apiKeyId: "", startDate: "", endDate: "" });
   };
 
   return (
     <div className="flex min-w-0 flex-col gap-6">
       <Card padding="md">
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
           <div className="flex min-w-0 flex-col gap-2">
             <label htmlFor="provider-filter" className="text-sm font-medium text-text-main">Provider</label>
             <select
               id="provider-filter"
               value={filters.provider}
-              onChange={(e) => setFilters({ ...filters, provider: e.target.value })}
+              onChange={(e) => handleFilterChange({ ...filters, provider: e.target.value })}
               className={cn(
                 "h-9 px-3 rounded-lg border border-black/10 dark:border-white/10 bg-surface",
                 "text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20",
@@ -208,12 +230,28 @@ export default function RequestDetailsTab() {
           </div>
           
           <div className="flex min-w-0 flex-col gap-2">
+            <label htmlFor="api-key-filter" className="text-sm font-medium text-text-main">API Key Name</label>
+            <select
+              id="api-key-filter"
+              value={filters.apiKeyId}
+              onChange={(e) => handleFilterChange({ ...filters, apiKeyId: e.target.value })}
+              className="h-9 w-full min-w-0 cursor-pointer rounded-lg border border-black/10 bg-surface px-3 text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20 dark:border-white/10"
+              style={{ colorScheme: 'auto' }}
+            >
+              <option value="">All API Keys</option>
+              {getRequestKeyOptions(apiKeys, translate).map(key => (
+                <option key={key.id} value={key.id} data-i18n-skip>{key.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex min-w-0 flex-col gap-2">
             <label htmlFor="start-date-filter" className="text-sm font-medium text-text-main">Start Date</label>
             <input
               id="start-date-filter"
               type="datetime-local"
               value={filters.startDate}
-              onChange={(e) => setFilters({ ...filters, startDate: e.target.value })}
+              onChange={(e) => handleFilterChange({ ...filters, startDate: e.target.value })}
               className={cn(
                 "h-9 px-3 rounded-lg border border-black/10 dark:border-white/10 bg-surface",
                 "w-full min-w-0 text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20"
@@ -227,7 +265,7 @@ export default function RequestDetailsTab() {
               id="end-date-filter"
               type="datetime-local"
               value={filters.endDate}
-              onChange={(e) => setFilters({ ...filters, endDate: e.target.value })}
+              onChange={(e) => handleFilterChange({ ...filters, endDate: e.target.value })}
               className={cn(
                 "h-9 px-3 rounded-lg border border-black/10 dark:border-white/10 bg-surface",
                 "w-full min-w-0 text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20"
@@ -240,7 +278,7 @@ export default function RequestDetailsTab() {
             <Button 
               variant="ghost" 
               onClick={handleClearFilters}
-              disabled={!filters.provider && !filters.startDate && !filters.endDate}
+              disabled={!filters.provider && !filters.apiKeyId && !filters.startDate && !filters.endDate}
               className="w-full"
             >
               Clear Filters
@@ -251,12 +289,13 @@ export default function RequestDetailsTab() {
 
       <Card padding="none">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1000px]">
+          <table className="w-full min-w-[1280px] [&_th]:whitespace-nowrap">
             <thead>
               <tr className="border-b border-black/5 dark:border-white/5">
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Timestamp</th>
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Model</th>
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Provider</th>
+                <th className="text-left p-4 text-sm font-semibold text-text-main">API Key Name</th>
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Input Tokens</th>
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Cached</th>
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Cache Creation</th>
@@ -282,16 +321,20 @@ export default function RequestDetailsTab() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan="10" className="p-8 text-center text-text-muted">
+                  <td colSpan="11" className="p-8 text-center text-text-muted">
                     <div className="flex items-center justify-center gap-2">
                       <span className="material-symbols-outlined animate-spin text-[20px]">progress_activity</span>
                       Loading...
                     </div>
                   </td>
                 </tr>
+              ) : error ? (
+                <tr>
+                  <td colSpan="11" className="p-8 text-center text-red-600" role="alert">{error}</td>
+                </tr>
               ) : details.length === 0 ? (
                 <tr>
-                  <td colSpan="10" className="p-8 text-center text-text-muted">
+                  <td colSpan="11" className="p-8 text-center text-text-muted">
                     No request details found
                   </td>
                 </tr>
@@ -312,6 +355,9 @@ export default function RequestDetailsTab() {
                          {getProviderName(detail.provider, providerNameCache)}
                        </span>
                      </td>
+                    <td data-i18n-skip className="max-w-[200px] truncate p-4 text-sm text-text-main" title={getRequestKeyName(detail, translate)}>
+                      {getRequestKeyName(detail, translate)}
+                    </td>
                     <td className="p-4 text-sm text-text-main text-right font-mono">
                       {getInputTokens(detail.tokens).toLocaleString()}
                     </td>
@@ -348,6 +394,7 @@ export default function RequestDetailsTab() {
                       <Button
                         variant="outline"
                         size="sm"
+                        className="whitespace-nowrap"
                         onClick={() => handleViewDetail(detail)}
                       >
                         Detail
@@ -360,7 +407,7 @@ export default function RequestDetailsTab() {
           </table>
         </div>
 
-        {!loading && details.length > 0 && (
+        {!loading && !error && details.length > 0 && (
           <div className="border-t border-black/5 dark:border-white/5">
             <Pagination
               currentPage={pagination.page}
@@ -394,6 +441,10 @@ export default function RequestDetailsTab() {
                  <span className="text-text-muted">Provider:</span>{" "}
                  <span className="text-text-main font-medium">{getProviderName(selectedDetail.provider, providerNameCache)}</span>
                </div>
+              <div>
+                <span className="text-text-muted">API Key Name:</span>{" "}
+                <span data-i18n-skip className="break-all text-text-main">{getRequestKeyName(selectedDetail, translate)}</span>
+              </div>
               <div>
                 <span className="text-text-muted">Model:</span>{" "}
                 <span className="text-text-main font-mono">{selectedDetail.model}</span>
