@@ -7,6 +7,8 @@ import Drawer from "@/shared/components/Drawer";
 import Pagination from "@/shared/components/Pagination";
 import { cn } from "@/shared/utils/cn";
 import { AI_PROVIDERS, getProviderByAlias } from "@/shared/constants/providers";
+import Tooltip from "@/shared/components/Tooltip";
+import { getCreditsCellValue } from "@/shared/utils/requestCredits";
 
 let providerNameCache = null;
 let providerNodesCache = null;
@@ -249,7 +251,7 @@ export default function RequestDetailsTab() {
 
       <Card padding="none">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[880px]">
+          <table className="w-full min-w-[1000px]">
             <thead>
               <tr className="border-b border-black/5 dark:border-white/5">
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Timestamp</th>
@@ -259,6 +261,20 @@ export default function RequestDetailsTab() {
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Cached</th>
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Cache Creation</th>
                 <th className="text-right p-4 text-sm font-semibold text-text-main">Output Tokens</th>
+                <th className="relative p-4 text-sm font-semibold text-text-main">
+                  <span className="block pr-4 text-right">Credits Used</span>
+                  <span className="absolute right-2 top-1.5 inline-flex">
+                    <Tooltip text="Only credit charges for the Qoder provider are recorded. Other providers show an empty cell." position="bottom" align="right">
+                      <button
+                        type="button"
+                        aria-label="Credits Used explanation"
+                        className="material-symbols-outlined cursor-help rounded border-0 bg-transparent p-0 text-[14px] leading-none text-text-muted hover:text-text-main focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+                      >
+                        info
+                      </button>
+                    </Tooltip>
+                  </span>
+                </th>
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Latency</th>
                 <th className="text-center p-4 text-sm font-semibold text-text-main">Action</th>
               </tr>
@@ -266,7 +282,7 @@ export default function RequestDetailsTab() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan="7" className="p-8 text-center text-text-muted">
+                  <td colSpan="10" className="p-8 text-center text-text-muted">
                     <div className="flex items-center justify-center gap-2">
                       <span className="material-symbols-outlined animate-spin text-[20px]">progress_activity</span>
                       Loading...
@@ -275,7 +291,7 @@ export default function RequestDetailsTab() {
                 </tr>
               ) : details.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="p-8 text-center text-text-muted">
+                  <td colSpan="10" className="p-8 text-center text-text-muted">
                     No request details found
                   </td>
                 </tr>
@@ -307,6 +323,9 @@ export default function RequestDetailsTab() {
                     </td>
                     <td className="p-4 text-sm text-text-main text-right font-mono">
                       {detail.tokens?.completion_tokens?.toLocaleString() || 0}
+                    </td>
+                    <td className="p-4 text-right font-mono text-sm text-text-main">
+                      {getCreditsCellValue(detail) ?? "—"}
                     </td>
                     <td className="p-4 text-sm text-text-muted">
                       <div className="flex flex-col gap-0.5">
@@ -422,6 +441,12 @@ export default function RequestDetailsTab() {
                   {selectedDetail.tokens?.completion_tokens?.toLocaleString() || 0}
                 </span>
               </div>
+              {getCreditsCellValue(selectedDetail) !== null && (
+                <div>
+                  <span className="text-text-muted">Credits Used:</span>{" "}
+                  <span className="text-text-main font-mono">{getCreditsCellValue(selectedDetail)}</span>
+                </div>
+              )}
             </div>
 
             {selectedDetail.pxpipe && (
