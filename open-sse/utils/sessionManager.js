@@ -143,7 +143,7 @@ function extractClientSessionId(headers, body, scope = "") {
         const v = headerValue(headers, key);
         if (v) return v;
     }
-    const requestId = scope === "kiro" ? null : headerValue(headers, "x-client-request-id");
+    const requestId = scope === "kiro" || scope === "qoder" ? null : headerValue(headers, "x-client-request-id");
     if (requestId) return requestId;
     const fromBody =
         normalizeSessionId(body?.prompt_cache_key) ||
@@ -208,6 +208,13 @@ function assistantTextSessionId(scope, body) {
 export function resolveSessionIdentity({ headers, body, connectionId, workspaceId, scope = "" } = {}) {
     const client = extractClientSessionId(headers, body, scope);
     if (client) return { sessionId: client, ephemeral: false };
+    // Qoder keeps server-side state under session_id. Falling back to the
+    // account/connection id would make two independent first-turn clients on
+    // the same Qoder account share that state. Without a client-provided
+    // conversation key there is no reliable way to associate a later turn
+    // with one of those clients, so isolation is safer than account-wide
+    // state reuse; the full message history is still sent on every request.
+    if (scope === "qoder") return { sessionId: generateBinaryStyleId(), ephemeral: true };
     const fromAssistant = scope === "kiro" ? null : assistantTextSessionId(`${scope}:${connectionId || ""}`, body);
     if (fromAssistant) return { sessionId: fromAssistant, ephemeral: false };
     const ws = normalizeSessionId(workspaceId);

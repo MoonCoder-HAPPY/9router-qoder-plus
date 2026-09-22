@@ -44,14 +44,6 @@ function buildTransformStream({ provider, sourceFormat, targetFormat, userAgent,
  * Handle streaming response — pipe provider SSE through transform stream to client.
  */
 export async function handleStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, userAgent, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, apiKeyIdentity, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, streamController, onStreamComplete, streamDetailId, pxpipe, reqTag, log }) {
-  if (onRequestSuccess) {
-    Promise.resolve()
-      .then(onRequestSuccess)
-      .catch(err => {
-        console.error("[ChatCore] onRequestSuccess failed:", err?.message || err);
-      });
-  }
-
   // When upstream returns HTML/text instead of SSE (e.g. Cloudflare 5xx error
   // page), piping it through the SSE transform stream causes Next.js
   // "failed to pipe response" and crashes the chat router. Read the body,
@@ -85,7 +77,14 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
   const isResponsesPassthrough = sourceFormat === FORMATS.OPENAI_RESPONSES && targetFormat === FORMATS.OPENAI_RESPONSES;
   const onAbortTerminal = isResponsesPassthrough ? buildAbortedResponsesTerminalBytes : null;
   const stallTimeoutMs = PROVIDERS[provider]?.stallTimeoutMs || STREAM_STALL_TIMEOUT_MS;
-  const transformedBody = pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal, stallTimeoutMs);
+  const transformedBody = pipeWithDisconnect(
+    providerResponse,
+    transformStream,
+    streamController,
+    onAbortTerminal,
+    stallTimeoutMs,
+    { ignoreCommentHeartbeats: provider === "qoder" },
+  );
 
   saveRequestDetail(buildRequestDetail({
     provider, model, connectionId, apiKeyIdentity,
@@ -96,7 +95,9 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
     providerResponse: "[Streaming - raw response not captured]",
     response: { content: "[Streaming in progress...]", thinking: null, type: "streaming" },
     pxpipe,
-    status: "success"
+    // The stream has only been accepted here; final success/error is persisted
+    // by onStreamComplete after the body reaches a terminal state.
+    status: "streaming"
   }, { id: streamDetailId })).catch(err => {
     console.error("[RequestDetail] Failed to save streaming request:", err.message);
   });
@@ -113,7 +114,8 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
 export function buildOnStreamComplete({ provider, model, connectionId, apiKey, apiKeyIdentity, requestStartTime, body, stream, finalBody, translatedBody, clientRawRequest, pxpipe, reqTag, log, onRequestSuccess, codexMetrics }) {
   const streamDetailId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 
-  const onStreamComplete = (contentObj, usage, ttftAt) => {
+  const onStreamComplete = (contentObj, usage, ttftAt, completion = {}) => {
+    const completed = completion?.completed !== false;
     const latency = {
       ttft: ttftAt ? ttftAt - requestStartTime : Date.now() - requestStartTime,
       total: Date.now() - requestStartTime
@@ -131,15 +133,19 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, a
       response: { content: safeContent, thinking: safeThinking, type: "streaming" },
       ...(codexMetrics && Object.keys(codexMetrics).length > 0 ? { codex: { ...codexMetrics } } : {}),
       pxpipe,
-      status: "success"
+      status: completed ? "success" : "error"
     }, { id: streamDetailId })).catch(err => {
       console.error("[RequestDetail] Failed to update streaming content:", err.message);
     });
 
     // Persist stream usage to DB (no console line; the "📊 done" line below is authoritative)
     saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, label: "STREAM USAGE", silent: true });
-    if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency }));
-    if (onRequestSuccess) {
+    if (completed) {
+      if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency }));
+    } else if (log?.errorLine) {
+      log.errorLine(reqTag, "✗", `FAILED 502 · ${provider}/${model} · ${latency.total}ms · incomplete stream`);
+    }
+    if (completed && onRequestSuccess) {
       Promise.resolve()
         .then(onRequestSuccess)
         .catch(err => {

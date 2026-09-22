@@ -61,4 +61,60 @@ describe("Kiro non-streaming error propagation", () => {
     expect(json.error.message).toContain("Kiro stream ended incompletely");
     expect(json).not.toHaveProperty("choices");
   });
+
+  it("does not report a failed Responses stream as a successful JSON response", async () => {
+    const onRequestSuccess = vi.fn();
+    const raw = [
+      "event: response.failed",
+      'data: {"type":"response.failed","response":{"status":"failed","error":{"code":"stream_disconnected","message":"socket closed"}}}',
+      "",
+    ].join("\n");
+    const result = await handleForcedSSEToJson({
+      providerResponse: new Response(raw, { headers: { "content-type": "text/event-stream" } }),
+      sourceFormat: FORMATS.OPENAI_RESPONSES,
+      provider: "qoder",
+      model: "qoder/dfmodel",
+      body: { model: "qoder/dfmodel", input: [] },
+      stream: false,
+      requestStartTime: Date.now(),
+      connectionId: "test-connection",
+      clientRawRequest: { endpoint: "/v1/responses" },
+      onRequestSuccess,
+      trackDone: vi.fn(),
+      appendLog: vi.fn(),
+    });
+
+    const json = await result.response.json();
+    expect(result.success).toBe(false);
+    expect(result.response.status).toBe(502);
+    expect(json.error.message).toContain("socket closed");
+    expect(onRequestSuccess).not.toHaveBeenCalled();
+  });
+
+  it("fails a Responses JSON conversion when the stream has no terminal event", async () => {
+    const onRequestSuccess = vi.fn();
+    const raw = [
+      "event: response.created",
+      'data: {"type":"response.created","response":{"id":"resp_incomplete"}}',
+      "",
+    ].join("\n");
+    const result = await handleForcedSSEToJson({
+      providerResponse: new Response(raw, { headers: { "content-type": "text/event-stream" } }),
+      sourceFormat: FORMATS.OPENAI_RESPONSES,
+      provider: "qoder",
+      model: "qoder/dfmodel",
+      body: { model: "qoder/dfmodel", input: [] },
+      stream: false,
+      requestStartTime: Date.now(),
+      connectionId: "test-connection",
+      clientRawRequest: { endpoint: "/v1/responses" },
+      onRequestSuccess,
+      trackDone: vi.fn(),
+      appendLog: vi.fn(),
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.response.status).toBe(502);
+    expect(onRequestSuccess).not.toHaveBeenCalled();
+  });
 });

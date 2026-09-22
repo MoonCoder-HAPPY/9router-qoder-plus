@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { createDisconnectAwareStream } from "../../open-sse/utils/streamHandler.js";
+import { createDisconnectAwareStream, pipeWithDisconnect } from "../../open-sse/utils/streamHandler.js";
+import { createPassthroughStreamWithLogger, createSSETransformStreamWithLogger } from "../../open-sse/utils/stream.js";
+import { FORMATS } from "../../open-sse/translator/formats.js";
 import { buildAbortedResponsesTerminalBytes, buildContextOverflowResponsesFrame } from "../../open-sse/utils/responsesStreamHelpers.js";
 
 // Minimal stream controller stub
@@ -68,6 +70,144 @@ describe("Responses abort terminal synthesis", () => {
     const text = await readAll(out);
     expect(text).not.toContain("response.failed");
     expect(text).not.toContain("[DONE]");
+  });
+
+  it("does not append response.failed after a completed Responses terminal", async () => {
+    let delivered = false;
+    const upstream = new ReadableStream({
+      pull(controller) {
+        if (!delivered) {
+          delivered = true;
+          controller.enqueue(new TextEncoder().encode(
+            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n",
+          ));
+          return;
+        }
+        const error = new Error("socket closed after terminal");
+        error.code = "UND_ERR_SOCKET";
+        controller.error(error);
+      },
+    });
+
+    const out = createDisconnectAwareStream(
+      {
+        readable: upstream,
+        writable: { getWriter: () => ({ abort: () => Promise.resolve() }) },
+        hasTerminal: () => true,
+      },
+      makeController(),
+      buildAbortedResponsesTerminalBytes,
+    );
+
+    const text = await readAll(out);
+    expect(text).not.toContain("response.failed");
+    expect(text).not.toContain("data: [DONE]");
+  });
+
+  it("ignores an unknown late error after a completed terminal", async () => {
+    let delivered = false;
+    const upstream = new ReadableStream({
+      pull(controller) {
+        if (!delivered) {
+          delivered = true;
+          controller.enqueue(new TextEncoder().encode(
+            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n",
+          ));
+          return;
+        }
+        controller.error(new Error("late parser failure"));
+      },
+    });
+
+    const out = createDisconnectAwareStream(
+      {
+        readable: upstream,
+        writable: { getWriter: () => ({ abort: () => Promise.resolve() }) },
+        hasTerminal: () => true,
+      },
+      makeController(),
+      buildAbortedResponsesTerminalBytes,
+    );
+
+    const text = await readAll(out);
+    expect(text).not.toContain("response.failed");
+    expect(text).not.toContain("data: [DONE]");
+  });
+
+  it("protects native passthrough after a completed Responses terminal", async () => {
+    let delivered = false;
+    const upstream = new ReadableStream({
+      pull(controller) {
+        if (!delivered) {
+          delivered = true;
+          controller.enqueue(new TextEncoder().encode(
+            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n",
+          ));
+          return;
+        }
+        const error = new Error("socket closed after terminal");
+        error.code = "UND_ERR_SOCKET";
+        controller.error(error);
+      },
+    });
+    const onStreamComplete = vi.fn();
+    const transform = createPassthroughStreamWithLogger("codex", null, "gpt-5.5", null, null, onStreamComplete);
+    const out = pipeWithDisconnect(
+      new Response(upstream, { headers: { "content-type": "text/event-stream" } }),
+      transform,
+      makeController(),
+      buildAbortedResponsesTerminalBytes,
+      60000,
+    );
+
+    const text = await readAll(out);
+    expect(text).toContain("response.completed");
+    expect(text).not.toContain("response.failed");
+    expect(text).not.toContain("data: [DONE]");
+    expect(onStreamComplete.mock.calls[0][3]).toEqual({ completed: true });
+  });
+
+  it("protects translated Responses streams after a completed terminal", async () => {
+    let delivered = false;
+    const upstream = new ReadableStream({
+      pull(controller) {
+        if (!delivered) {
+          delivered = true;
+          controller.enqueue(new TextEncoder().encode(
+            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n",
+          ));
+          return;
+        }
+        const error = new Error("socket closed after terminal");
+        error.code = "UND_ERR_SOCKET";
+        controller.error(error);
+      },
+    });
+    const onStreamComplete = vi.fn();
+    const transform = createSSETransformStreamWithLogger(
+      FORMATS.OPENAI_RESPONSES,
+      FORMATS.OPENAI_RESPONSES,
+      "qoder",
+      null,
+      null,
+      "gpt-5.5",
+      null,
+      null,
+      onStreamComplete,
+    );
+    const out = pipeWithDisconnect(
+      new Response(upstream, { headers: { "content-type": "text/event-stream" } }),
+      transform,
+      makeController(),
+      buildAbortedResponsesTerminalBytes,
+      60000,
+    );
+
+    const text = await readAll(out);
+    expect(text).toContain("response.completed");
+    expect(text).not.toContain("response.failed");
+    expect(text).not.toContain("data: [DONE]");
+    expect(onStreamComplete.mock.calls[0][3]).toEqual({ completed: true });
   });
 });
 

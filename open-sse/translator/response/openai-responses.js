@@ -123,6 +123,7 @@ export function openaiToOpenAIResponsesResponse(chunk, state) {
 
   // Handle finish_reason
   if (choice.finish_reason) {
+    state.finishReasonSeen = true;
     for (const i in state.msgItemAdded) closeMessage(state, emit, i);
     closeReasoning(state, emit);
     for (const i in state.funcCallIds) closeToolCall(state, emit, i);
@@ -525,6 +526,14 @@ function responsesUsage(usage) {
 
 function flushEvents(state) {
   if (state.completedSent) return [];
+
+  if (!state.finishReasonSeen) {
+    return failResponse(state, {
+      type: "stream_error",
+      code: "stream_disconnected",
+      message: "stream closed before a terminal chunk",
+    });
+  }
   
   const events = [];
   const nextSeq = () => ++state.seq;
@@ -554,26 +563,21 @@ function computeFinishReason(state) {
  * This is for when Codex returns data and we need to send it to an OpenAI-compatible client
  */
 export function openaiResponsesToOpenAIResponse(chunk, state) {
+  state ||= {};
+  if (state.responseFailed || state.responseCompleted) return null;
   if (!chunk) {
-    // Flush: send final chunk with finish_reason
-    if (state.finishReasonSent || !state.started) return null;
-
-    const finishReason = computeFinishReason(state);
-
+    // EOF without a Responses terminal event is a transport failure. Do not
+    // synthesize a normal finish chunk for a truncated upstream response.
+    if (!state.started) return null;
+    state.responseFailed = true;
     state.finishReasonSent = true;
-    state.finishReason = finishReason;
-
-    const finalChunk = buildChunk(
-      { id: state.chatId || `chatcmpl-${Date.now()}`, created: state.created || Math.floor(Date.now() / 1000), model: state.model || MODEL_FALLBACK },
-      {},
-      finishReason
-    );
-
-    if (state.usage && typeof state.usage === "object") {
-      finalChunk.usage = state.usage;
-    }
-
-    return finalChunk;
+    const error = normalizeResponsesError({
+      type: "stream_error",
+      code: "stream_disconnected",
+      message: "stream closed before response.completed",
+    });
+    state.error = error;
+    return buildOpenAIErrorChunk(state, error);
   }
 
   // Handle different event types from Responses API
@@ -642,6 +646,12 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
 
   // Response completed
   if (eventType === "response.completed" || eventType === "response.done") {
+    const responseStatus = data.response?.status || data.status;
+    const responseError = data.response?.error || data.error;
+    if (responseStatus === "failed" || responseError) {
+      return failOpenAIResponses(state, responseError);
+    }
+
     // Extract usage from response.completed event
     const responseUsage = data.response?.usage;
     if (responseUsage && typeof responseUsage === "object") {
@@ -653,13 +663,13 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
       
       state.usage = buildUsage({ promptTokens: inputTokens, completionTokens: outputTokens, totalTokens: inputTokens + outputTokens, cachedTokens: cacheReadTokens });
     }
-    
     if (!state.finishReasonSent) {
       const finishReason = computeFinishReason(state);
 
       state.finishReasonSent = true;
+      state.responseCompleted = true;
       state.finishReason = finishReason; // Mark for usage injection in stream.js
-      
+
       const finalChunk = buildChunk(
         { id: state.chatId, created: state.created, model: state.model || MODEL_FALLBACK },
         {},
@@ -678,22 +688,8 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
 
   // Error events from Responses API (e.g. model_not_found)
   if (eventType === "error" || eventType === "response.failed") {
-    // Avoid emitting duplicate errors (error + response.failed arrive back-to-back)
-    if (state.finishReasonSent) return null;
-
     const error = data.error || data.response?.error;
-    if (error) {
-      state.error = error;
-      state.finishReasonSent = true;
-
-      // Surface the error as an OpenAI-compatible error chunk
-      return buildChunk(
-        { id: state.chatId || `chatcmpl-${Date.now()}`, created: state.created || Math.floor(Date.now() / 1000), model: state.model || MODEL_FALLBACK },
-        { content: `[Error] ${error.message || JSON.stringify(error)}` },
-        OPENAI_FINISH.STOP
-      );
-    }
-    return null;
+    return failOpenAIResponses(state, error);
   }
 
   // Reasoning summary delta → emit as reasoning_content for client thinking display
@@ -708,6 +704,39 @@ export function openaiResponsesToOpenAIResponse(chunk, state) {
 
   // Ignore other events
   return null;
+}
+
+function normalizeResponsesError(error) {
+  if (error && typeof error === "object") {
+    return {
+      ...error,
+      type: error.type || "stream_error",
+      code: error.code || "upstream_error",
+      message: error.message || "Upstream Responses stream failed",
+    };
+  }
+  return {
+    type: "stream_error",
+    code: "upstream_error",
+    message: "Upstream Responses stream failed",
+  };
+}
+
+function buildOpenAIErrorChunk(state, error) {
+  return {
+    id: state.chatId || `chatcmpl-${Date.now()}`,
+    object: "chat.completion.chunk",
+    created: state.created || Math.floor(Date.now() / 1000),
+    model: state.model || MODEL_FALLBACK,
+    error,
+  };
+}
+
+function failOpenAIResponses(state, error) {
+  state.responseFailed = true;
+  state.finishReasonSent = true;
+  state.error = normalizeResponsesError(error);
+  return buildOpenAIErrorChunk(state, state.error);
 }
 
 // Register both directions

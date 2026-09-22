@@ -82,7 +82,7 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
       onError?.(error);
     },
 
-    abort: () => abortController.abort()
+    abort: (reason) => abortController.abort(reason)
   };
 }
 
@@ -129,11 +129,12 @@ export function createDisconnectAwareStream(transformStream, streamController, o
         controller.enqueue(value);
       } catch (error) {
         const wasConnected = streamController.isConnected();
+        const transformAlreadyTerminal = transformStream.hasTerminal?.() === true;
         // Controller already closed = downstream ended; not an upstream error, skip noisy log.
         const msg0 = error?.message || "";
         const isControllerClosed = msg0.includes("already closed") || msg0.includes("Invalid state");
-        if (!isControllerClosed) streamController.handleError(error);
-        try { transformStream.flushPartialUsage?.(); } catch {}
+        if (!isControllerClosed && !transformAlreadyTerminal) streamController.handleError(error);
+        try { transformStream.flushPartialUsage?.(transformAlreadyTerminal); } catch {}
         reader.cancel().catch(() => {});
         writer.abort().catch(() => {});
 
@@ -155,8 +156,8 @@ export function createDisconnectAwareStream(transformStream, streamController, o
         // Graceful close on network/abort, or when a structured terminal is available
         // (Responses passthrough prefers response.failed + [DONE] over a raw transport error)
         try {
-          if (!wasConnected || isNetworkClose || onAbortTerminal) {
-            emitTerminal(controller);
+          if (!wasConnected || transformAlreadyTerminal || isNetworkClose || (onAbortTerminal && !transformAlreadyTerminal)) {
+            if (!transformAlreadyTerminal) emitTerminal(controller);
             controller.close();
           } else {
             controller.error(error);
@@ -168,7 +169,8 @@ export function createDisconnectAwareStream(transformStream, streamController, o
     cancel(reason) {
       // Persist partial usage before teardown — an aborted response still cost
       // tokens upstream, and dropping them would make billing unreconcilable.
-      try { transformStream.flushPartialUsage?.(); } catch {}
+      const transformAlreadyTerminal = transformStream.hasTerminal?.() === true;
+      try { transformStream.flushPartialUsage?.(transformAlreadyTerminal); } catch {}
       streamController.handleDisconnect(reason || "cancelled");
       reader.cancel();
       writer.abort();
@@ -192,13 +194,40 @@ export function createDisconnectAwareStream(transformStream, streamController, o
  * @param {TransformStream} transformStream - Transform stream for SSE
  * @param {object} streamController - Stream controller from createStreamController
  */
-export function pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal = null, stallTimeoutMs = STREAM_STALL_TIMEOUT_MS) {
+export function pipeWithDisconnect(
+  providerResponse,
+  transformStream,
+  streamController,
+  onAbortTerminal = null,
+  stallTimeoutMs = STREAM_STALL_TIMEOUT_MS,
+  options = {},
+) {
   let stallTimer = null;
   let chunkCount = 0;
   let totalBytes = 0;
   let lastChunkAt = Date.now();
   const t0 = Date.now();
   const tag = "STREAM";
+  const ignoreCommentHeartbeats = options?.ignoreCommentHeartbeats === true;
+  const heartbeatDecoder = ignoreCommentHeartbeats ? new TextDecoder() : null;
+  const isCommentHeartbeat = (chunk) => {
+    if (!heartbeatDecoder) return false;
+    let text = "";
+    try {
+      text = heartbeatDecoder.decode(chunk, { stream: true });
+    } catch {
+      return false;
+    }
+    const lines = text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    // Qoder's keepalive is an SSE comment (`: qoder ...`). It keeps the
+    // downstream HTTP connection alive, but it is not evidence that the
+    // upstream model is still producing output. Do not let it reset the
+    // model-stall watchdog.
+    return lines.length === 0 || lines.every((line) => line.startsWith(":"));
+  };
   const clearStall = () => {
     if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
   };
@@ -208,7 +237,7 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
       stallTimer = null;
       dbg(tag, `STALL TIMEOUT ${stallTimeoutMs}ms | chunks=${chunkCount} | bytes=${totalBytes} | sinceLast=${Date.now() - lastChunkAt}ms`);
       streamController.handleError?.(new Error("stream stall timeout"));
-      streamController.abort?.();
+      streamController.abort?.(new Error("stream stall timeout"));
     }, stallTimeoutMs);
   };
 
@@ -222,7 +251,7 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
     handleComplete: () => { dbg(tag, `complete | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); clearStall(); streamController.handleComplete(); },
     handleError: (e) => { dbg(tag, `error: ${e?.message} | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); clearStall(); streamController.handleError(e); },
     handleDisconnect: (r) => { dbg(tag, `disconnect: ${r} | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); clearStall(); streamController.handleDisconnect(r); },
-    abort: () => { clearStall(); streamController.abort(); }
+    abort: (reason) => { clearStall(); streamController.abort(reason); }
   };
 
   armStall();
@@ -235,11 +264,13 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
       totalBytes += sz;
       const now = Date.now();
       const gap = now - lastChunkAt;
-      lastChunkAt = now;
       if (isDebugEnabled && (chunkCount <= 5 || chunkCount % 20 === 0 || gap > 5000)) {
         dbg(tag, `chunk #${chunkCount} | size=${sz}B | gap=${gap}ms | total=${totalBytes}B`);
       }
-      armStall();
+      if (!isCommentHeartbeat(chunk)) {
+        lastChunkAt = now;
+        armStall();
+      }
       controller.enqueue(chunk);
     },
     flush() { dbg(tag, `upstream EOF | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); clearStall(); }
@@ -250,7 +281,12 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
     .pipeThrough(transformStream);
 
   return createDisconnectAwareStream(
-    { readable: transformedBody, writable: { getWriter: () => ({ abort: () => Promise.resolve() }) } },
+    {
+      readable: transformedBody,
+      writable: { getWriter: () => ({ abort: () => Promise.resolve() }) },
+      flushPartialUsage: (...args) => transformStream.flushPartialUsage?.(...args),
+      hasTerminal: () => transformStream.hasTerminal?.() === true,
+    },
     wrappedController,
     onAbortTerminal
   );

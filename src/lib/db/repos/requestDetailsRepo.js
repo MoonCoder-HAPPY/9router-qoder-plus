@@ -107,7 +107,14 @@ async function flushToDatabase() {
           };
 
           db.run(
-            `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET timestamp = excluded.timestamp, provider = excluded.provider, model = excluded.model, connectionId = excluded.connectionId, status = excluded.status, data = excluded.data`,
+            `INSERT INTO requestDetails(id, timestamp, provider, model, connectionId, status, data) VALUES(?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               timestamp = CASE WHEN excluded.status = 'streaming' AND requestDetails.status IN ('success', 'error') THEN requestDetails.timestamp ELSE excluded.timestamp END,
+               provider = CASE WHEN excluded.status = 'streaming' AND requestDetails.status IN ('success', 'error') THEN requestDetails.provider ELSE excluded.provider END,
+               model = CASE WHEN excluded.status = 'streaming' AND requestDetails.status IN ('success', 'error') THEN requestDetails.model ELSE excluded.model END,
+               connectionId = CASE WHEN excluded.status = 'streaming' AND requestDetails.status IN ('success', 'error') THEN requestDetails.connectionId ELSE excluded.connectionId END,
+               status = CASE WHEN excluded.status = 'streaming' AND requestDetails.status IN ('success', 'error') THEN requestDetails.status ELSE excluded.status END,
+               data = CASE WHEN excluded.status = 'streaming' AND requestDetails.status IN ('success', 'error') THEN requestDetails.data ELSE excluded.data END`,
             [record.id, record.timestamp, record.provider, record.model, record.connectionId, record.status, stringifyJson(record)]
           );
         }

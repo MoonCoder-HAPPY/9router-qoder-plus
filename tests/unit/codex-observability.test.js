@@ -39,6 +39,7 @@ describe("Codex observability signals", () => {
     expect(summary.startsWith("[CODEX]")).toBe(true);
     expect(summary).toContain("reasoning_events=2");
     expect(summary).toContain("continuations=0");
+    expect(summary).toContain("termination=clean_done");
   });
 it("fills the shared metrics object the request detail is built from", async () => {
     const metrics = {};
@@ -64,6 +65,7 @@ it("fills the shared metrics object the request detail is built from", async () 
 
     expect(metrics.reasoningEvents).toBe(1);
     expect(metrics.continuations).toBeUndefined();
+    expect(metrics.streamTermination).toBe("clean_done");
   });
 });
 

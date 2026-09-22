@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { __test__ as qoderInternals } from "../../open-sse/executors/qoder.js";
+import { createSSETransformStreamWithLogger } from "../../open-sse/utils/stream.js";
+import { FORMATS } from "../../open-sse/translator/formats.js";
 
 function envelope(body, statusCodeValue = 200) {
   return `data: ${JSON.stringify({
@@ -52,6 +54,14 @@ function completedResponse() {
   );
 }
 
+function socketClosedError() {
+  return new TypeError("fetch failed", {
+    cause: Object.assign(new Error("other side closed"), {
+      code: "UND_ERR_SOCKET",
+    }),
+  });
+}
+
 describe("Qoder queue-aware streaming", () => {
   it("returns an SSE response immediately and keeps it alive while retrying", async () => {
     let calls = 0;
@@ -101,8 +111,49 @@ describe("Qoder queue-aware streaming", () => {
 
     const text = await response.text();
 
-    expect(text).toContain("[qoder error");
+    expect(text).toContain('"code":"server_is_overloaded"');
     expect(text).toContain("queue retry limit reached");
+    expect(text).not.toContain('"finish_reason":"stop"');
     expect(text).toContain("data: [DONE]");
+  });
+
+  it("emits a structured error when a queue retry socket closes", async () => {
+    const response = await qoderInternals.createQoderQueueRetryResponse({
+      initialQueueInfo: { queued: true, queueCount: 50 },
+      model: "qoder/qfmodel",
+      signal: new AbortController().signal,
+      log: { info() {} },
+      doFetch: async () => {
+        throw socketClosedError();
+      },
+      retryOptions: {
+        maxAttempts: 1,
+        baseDelayMs: 1,
+        maxDelayMs: 1,
+      },
+      keepaliveMs: 5,
+      sleepFn: async () => {},
+    });
+
+    const text = await new Response(
+      response.body.pipeThrough(
+        createSSETransformStreamWithLogger(
+          FORMATS.OPENAI,
+          FORMATS.OPENAI_RESPONSES,
+          "qoder",
+          null,
+          null,
+          "qfmodel",
+          null,
+          { messages: [{ role: "user", content: "test" }] },
+        ),
+      ),
+    ).text();
+
+    expect(text).toContain("event: response.failed");
+    expect(text).toContain('"code":"stream_disconnected"');
+    expect(text).toContain("retry failed: fetch failed");
+    expect(text).not.toContain("event: response.completed");
+    expect(text).not.toContain("[qoder error");
   });
 });

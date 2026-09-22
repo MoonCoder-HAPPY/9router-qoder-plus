@@ -69,6 +69,23 @@ function stopTextBlock(state, results) {
 
 // Convert OpenAI stream chunk to Claude format
 export function openaiToClaudeResponse(chunk, state) {
+  state ||= {};
+  const isFinishChunk = Boolean(chunk?.choices?.[0]?.finish_reason);
+  if (state.responseCompleted && (!isFinishChunk || state.responseTerminalEmitted)) return null;
+  if (chunk?.error) {
+    if (state.errorEmitted) return null;
+    state.errorEmitted = true;
+    state.responseFailed = true;
+    state.error = chunk.error;
+    return [{
+      type: "error",
+      error: {
+        type: mapClaudeErrorType(chunk.error),
+        message: chunk.error.message || "Upstream stream failed",
+      },
+    }];
+  }
+  if (state.responseFailed) return null;
   if (!chunk || !chunk.choices?.[0]) return null;
 
   const results = [];
@@ -245,6 +262,8 @@ export function openaiToClaudeResponse(chunk, state) {
 
     // Mark finish for later usage injection in stream.js
     state.finishReason = choice.finish_reason;
+    state.responseCompleted = true;
+    state.responseTerminalEmitted = true;
 
     // Use tracked usage (will be estimated in stream.js if not valid)
     const finalUsage = state.usage || { input_tokens: 0, output_tokens: 0 };
@@ -260,6 +279,13 @@ export function openaiToClaudeResponse(chunk, state) {
 }
 
 const convertFinishReason = (reason) => fromOpenAIFinish(reason, "claude");
+
+function mapClaudeErrorType(error) {
+  if (error?.code === "rate_limit_exceeded") return "rate_limit_error";
+  if (error?.code === "context_length_exceeded") return "invalid_request_error";
+  if (error?.type === "invalid_request_error") return "invalid_request_error";
+  return "api_error";
+}
 
 // Register
 register(FORMATS.OPENAI, FORMATS.CLAUDE, null, openaiToClaudeResponse);

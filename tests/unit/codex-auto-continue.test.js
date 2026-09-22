@@ -9,6 +9,10 @@ const envelope = (inner) => `data: ${JSON.stringify({ statusCodeValue: 200, body
 const chunk = (delta, finishReason = null) =>
   JSON.stringify({ choices: [{ index: 0, delta, finish_reason: finishReason }] });
 
+const socketClosedError = () => new TypeError("fetch failed", {
+  cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }),
+});
+
 /** Upstream turn that announces the next step and stops without a tool call. */
 const danglingTurn = () =>
   new Response(
@@ -131,6 +135,20 @@ describe("auto-continue budget from settings", () => {
     const out = await drain(wrapQoderSSE(finishTurn(), "qoder/dfmodel", { continueFetch, hasTools: true, maxContinuations: 1 }));
     expect(continueFetch).not.toHaveBeenCalled();
     expect(out).toMatch(/finish_reason":\s*"stop"/);
+    expect(out).toContain("[DONE]");
+  });
+
+  it("fails instead of completing when the continuation request closes", async () => {
+    const out = await drain(
+      wrapQoderSSE(danglingTurn(), "qoder/dfmodel", {
+        continueFetch: async () => { throw socketClosedError(); },
+        hasTools: true,
+        maxContinuations: 1,
+      }),
+    );
+
+    expect(out).toContain('"code":"stream_disconnected"');
+    expect(out).not.toContain('"finish_reason":"stop"');
     expect(out).toContain("[DONE]");
   });
 });

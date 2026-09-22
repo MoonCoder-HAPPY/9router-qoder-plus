@@ -33,7 +33,7 @@ vi.mock("@/shared/services/codexCompat.js", async (importOriginal) => ({
 
 const { default: QoderExecutor } = await import("../../open-sse/executors/qoder.js");
 const { checkFallbackError } = await import("../../open-sse/services/accountFallback.js");
-const { createSSETransformStreamWithLogger } = await import("../../open-sse/utils/stream.js");
+const { createPassthroughStreamWithLogger, createSSETransformStreamWithLogger } = await import("../../open-sse/utils/stream.js");
 const { FORMATS } = await import("../../open-sse/translator/formats.js");
 
 const credentials = {
@@ -67,6 +67,51 @@ function completedResponse(content = "recovered") {
   });
 }
 
+function danglingResponse() {
+  const first = JSON.stringify({
+    id: "chatcmpl-dangling",
+    choices: [{ index: 0, delta: { content: "Let me check the parser:" }, finish_reason: null }],
+  });
+  const finish = JSON.stringify({
+    id: "chatcmpl-dangling",
+    choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+  });
+  return new Response(
+    `data: ${JSON.stringify({ statusCodeValue: 200, body: first })}\n\n` +
+      `data: ${JSON.stringify({ statusCodeValue: 200, body: finish })}\n\n` +
+      `data: ${JSON.stringify({ statusCodeValue: 200, body: "[DONE]" })}\n\n`,
+    { status: 200, headers: { "content-type": "text/event-stream" } },
+  );
+}
+
+function continuationResponse() {
+  const tool = JSON.stringify({
+    id: "chatcmpl-continuation",
+    choices: [{
+      index: 0,
+      delta: {
+        tool_calls: [{
+          index: 0,
+          id: "call_continuation",
+          type: "function",
+          function: { name: "exec_command", arguments: '{"cmd":"ls"}' },
+        }],
+      },
+      finish_reason: null,
+    }],
+  });
+  const finish = JSON.stringify({
+    id: "chatcmpl-continuation",
+    choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+  });
+  return new Response(
+    `data: ${JSON.stringify({ statusCodeValue: 200, body: tool })}\n\n` +
+      `data: ${JSON.stringify({ statusCodeValue: 200, body: finish })}\n\n` +
+      `data: ${JSON.stringify({ statusCodeValue: 200, body: "[DONE]" })}\n\n`,
+    { status: 200, headers: { "content-type": "text/event-stream" } },
+  );
+}
+
 function firstTokenTimeoutResponse() {
   const body = JSON.stringify({
     code: "504",
@@ -74,6 +119,35 @@ function firstTokenTimeoutResponse() {
   });
   const envelope = JSON.stringify({ statusCodeValue: 504, body });
   return new Response(`data: ${envelope}\n\n`, {
+    status: 200,
+    headers: { "content-type": "text/event-stream" },
+  });
+}
+
+function truncatedResponse() {
+  const chunk = JSON.stringify({
+    id: "chatcmpl-truncated",
+    choices: [{ index: 0, delta: { content: "partial answer" }, finish_reason: null }],
+  });
+  const envelope = JSON.stringify({ statusCodeValue: 200, body: chunk });
+  return new Response(`data: ${envelope}\n\n`, {
+    status: 200,
+    headers: { "content-type": "text/event-stream" },
+  });
+}
+
+function midStreamSocketClosedResponse() {
+  const chunk = JSON.stringify({
+    id: "chatcmpl-mid-stream-close",
+    choices: [{ index: 0, delta: { content: "partial answer" }, finish_reason: null }],
+  });
+  const envelope = JSON.stringify({ statusCodeValue: 200, body: chunk });
+  return new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(`data: ${envelope}\n\n`));
+      setTimeout(() => controller.error(socketClosedError()), 0);
+    },
+  }), {
     status: 200,
     headers: { "content-type": "text/event-stream" },
   });
@@ -167,6 +241,22 @@ describe("Qoder pre-response socket retry", () => {
     expect(translated).not.toContain("event: response.completed");
   });
 
+  it("preserves a structured transport error for the ordinary Chat Completions endpoint", async () => {
+    mocks.proxyAwareFetch.mockRejectedValue(socketClosedError());
+
+    const result = await execute();
+    const output = await new Response(
+      result.response.body.pipeThrough(
+        createPassthroughStreamWithLogger("qoder", null, "dfmodel", null, null, null, null),
+      ),
+    ).text();
+
+    expect(output).toContain('"code":"server_is_overloaded"');
+    expect(output).toContain("UND_ERR_SOCKET");
+    expect(output).not.toContain('"finish_reason":"stop"');
+    expect(output).toContain("data: [DONE]");
+  });
+
   it("hands a 504 response after the socket retry to the existing timeout ladder", async () => {
     mocks.proxyAwareFetch
       .mockRejectedValueOnce(socketClosedError())
@@ -181,6 +271,84 @@ describe("Qoder pre-response socket retry", () => {
     expect(text).toContain(": qoder queue keepalive");
     expect(text).toContain('"content":"recovered after timeout"');
     expect(text).toContain("data: [DONE]");
+  });
+
+  it("retries a socket close during auto-continuation and preserves the tool turn", async () => {
+    const continuationBody = {
+      ...body,
+      tools: [{
+        type: "function",
+        function: { name: "exec_command", parameters: { type: "object", properties: {} } },
+      }],
+    };
+    mocks.proxyAwareFetch
+      .mockResolvedValueOnce(danglingResponse())
+      .mockRejectedValueOnce(socketClosedError())
+      .mockResolvedValueOnce(continuationResponse());
+
+    const result = await new QoderExecutor().execute({
+      model: "qoder/dfmodel",
+      body: continuationBody,
+      stream: true,
+      credentials,
+      signal: new AbortController().signal,
+      log,
+      clientSessionId: "socket-retry-continuation-session",
+    });
+    const output = await result.response.text();
+
+    expect(mocks.proxyAwareFetch).toHaveBeenCalledTimes(3);
+    expect(output).toContain("call_continuation");
+    expect(output).toContain('"finish_reason":"tool_calls"');
+    expect(output).not.toContain('"code":"stream_disconnected"');
+  });
+
+  it("does not mark an upstream EOF without finish as a successful Responses turn", async () => {
+    mocks.proxyAwareFetch.mockResolvedValueOnce(truncatedResponse());
+
+    const result = await execute();
+    const translated = await new Response(
+      result.response.body.pipeThrough(
+        createSSETransformStreamWithLogger(
+          FORMATS.OPENAI,
+          FORMATS.OPENAI_RESPONSES,
+          "qoder",
+          null,
+          null,
+          "dfmodel",
+          null,
+          body,
+        ),
+      ),
+    ).text();
+
+    expect(translated).toContain("event: response.failed");
+    expect(translated).toContain('"code":"stream_disconnected"');
+    expect(translated).not.toContain("event: response.completed");
+  });
+
+  it("does not mark a mid-stream socket close as a successful Responses turn", async () => {
+    mocks.proxyAwareFetch.mockResolvedValueOnce(midStreamSocketClosedResponse());
+
+    const result = await execute();
+    const translated = await new Response(
+      result.response.body.pipeThrough(
+        createSSETransformStreamWithLogger(
+          FORMATS.OPENAI,
+          FORMATS.OPENAI_RESPONSES,
+          "qoder",
+          null,
+          null,
+          "dfmodel",
+          null,
+          body,
+        ),
+      ),
+    ).text();
+
+    expect(translated).toContain("event: response.failed");
+    expect(translated).toContain('"code":"stream_disconnected"');
+    expect(translated).not.toContain("event: response.completed");
   });
 
   it("does not classify an exhausted socket close as an account fault", () => {

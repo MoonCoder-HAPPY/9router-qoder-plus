@@ -203,6 +203,21 @@ function isQoderSocketCloseError(error, signal = null) {
   );
 }
 
+function isQoderRetryableFetchError(error, signal = null) {
+  if (signal?.aborted) return false;
+  if (isQoderSocketCloseError(error, signal)) return true;
+  const chain = errorChain(error);
+  if (chain.some((item) => ["ETIMEDOUT", "TIMEOUT", "UND_ERR_CONNECT_TIMEOUT"].includes(String(item?.code || "").toUpperCase()))) {
+    return true;
+  }
+  const message = chain
+    .map((item) => item?.message || "")
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return message.includes("fetch connect timeout") || message.includes("connect timeout");
+}
+
 function formatQoderSocketError(error) {
   const chain = errorChain(error);
   const code = chain.map((item) => item?.code).find(Boolean);
@@ -272,7 +287,7 @@ function createQoderNetworkRetryResponse({
             } catch (error) {
               if (signal?.aborted || error?.name === "AbortError") throw error;
               lastError = error;
-              if (isQoderSocketCloseError(error, signal) && attempt < maxAttempts) continue;
+              if (isQoderRetryableFetchError(error, signal) && attempt < maxAttempts) continue;
               writeSocketError(error);
               return;
             }
@@ -331,6 +346,7 @@ function createQoderNetworkRetryResponse({
             }
 
             const wrapped = wrapQoderSSE(inspected.response, model, {
+              signal,
               metrics,
               continueFetch,
               hasTools,
@@ -554,6 +570,34 @@ function replayQoderResponse(response, reader, chunks) {
   });
 }
 
+function buildQoderStreamFailureResponse(error, model = "qoder") {
+  const inner = JSON.stringify({
+    error: {
+      message: `${model}: upstream stream failed before a terminal chunk (${formatQoderSocketError(error)})`,
+      type: "server_error",
+      code: "stream_disconnected",
+    },
+  });
+  const envelope = JSON.stringify({ statusCodeValue: 200, body: inner });
+  return new Response(`data: ${envelope}\n\n`, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+    },
+  });
+}
+
+function buildQoderErrorFrame(message, code = "upstream_error") {
+  return JSON.stringify({
+    error: {
+      message: truncate(message, 1600),
+      type: "server_error",
+      code,
+    },
+  });
+}
+
 /**
  * Qoder sometimes returns HTTP 200 and then emits a first SSE envelope with
  * statusCodeValue=403 and an inner 10605/isQueued body. The stock wrapper
@@ -561,7 +605,7 @@ function replayQoderResponse(response, reader, chunks) {
  * still interrupts Claude Code. Peek the first meaningful SSE data line and
  * ask execute() to retry before anything is sent downstream.
  */
-async function peekStreamQueueInfo(response) {
+async function peekStreamQueueInfo(response, model = "qoder") {
   if (!response.ok || !response.body) return { queued: false, queueCount: null, response };
 
   const reader = response.body.getReader();
@@ -572,7 +616,24 @@ async function peekStreamQueueInfo(response) {
   const replay = () => replayQoderResponse(response, reader, chunks);
 
   while (true) {
-    const { done, value } = await reader.read();
+    let readResult;
+    try {
+      readResult = await reader.read();
+    } catch (error) {
+      // If the socket closes while the first meaningful bytes are being
+      // inspected, preserve the buffered prefix and let wrapQoderSSE turn the
+      // eventual read failure into a structured stream_disconnected frame.
+      if (chunks.length > 0) {
+        return { queued: false, queueCount: null, response: replay() };
+      }
+      return {
+        queued: false,
+        queueCount: null,
+        transportError: error,
+        response: buildQoderStreamFailureResponse(error, model),
+      };
+    }
+    const { done, value } = readResult;
     if (done) return { queued: false, queueCount: null, response: replay() };
     chunks.push(value);
     totalBytes += value?.byteLength || value?.length || 0;
@@ -583,7 +644,13 @@ async function peekStreamQueueInfo(response) {
       const line = buffer.slice(0, nl);
       buffer = buffer.slice(nl + 1);
       const trimmed = line.replace(/\r$/, "").trim();
-      if (!trimmed || !trimmed.startsWith("data:")) continue;
+      if (!trimmed) continue;
+
+      // A comment is already a valid SSE heartbeat. Stop peeking here so the
+      // caller can return the response immediately; replayQoderResponse keeps
+      // the comment and the reader for wrapQoderSSE to consume.
+      if (trimmed.startsWith(":")) return { queued: false, queueCount: null, response: replay() };
+      if (!trimmed.startsWith("data:")) continue;
 
       const data = trimmed.slice(5).trimStart();
       if (!data || data === "[DONE]") return { queued: false, queueCount: null, response: replay() };
@@ -659,7 +726,7 @@ async function inspectQoderResponse(response, ctx = {}) {
   }
 
   if (response.ok) {
-    const peeked = await peekStreamQueueInfo(response);
+    const peeked = await peekStreamQueueInfo(response, ctx?.modelKey || "qoder");
     if (peeked.errorInfo) {
       const info = peeked.errorInfo;
       ctx?.log?.warn?.(
@@ -674,6 +741,9 @@ async function inspectQoderResponse(response, ctx = {}) {
         response: buildQoderEnvelopeErrorResponse(info, ctx),
       };
     }
+    if (peeked.transportError) {
+      return { ...peeked, source: "stream" };
+    }
     return { ...peeked, errorInfo: null, source: "stream" };
   }
 
@@ -682,6 +752,10 @@ async function inspectQoderResponse(response, ctx = {}) {
 
 const sleep = (ms, signal) =>
   new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason || new DOMException("The operation was aborted", "AbortError"));
+      return;
+    }
     const t = setTimeout(resolve, ms);
     if (signal) {
       signal.addEventListener(
@@ -730,21 +804,8 @@ function createQoderQueueRetryResponse({
           }
         };
         const keepalive = () => write(`: qoder queue keepalive ${Date.now()}\n\n`);
-        const error = (message) => {
-          const chunk = JSON.stringify({
-            id: `qoder-error-${Date.now()}`,
-            object: "chat.completion.chunk",
-            created: Math.floor(Date.now() / 1000),
-            model,
-            choices: [
-              {
-                index: 0,
-                delta: { content: `\n[qoder error: ${truncate(message, 300)}]` },
-                finish_reason: "stop",
-              },
-            ],
-          });
-          write(`data: ${chunk}\n\n${SSE_DONE}`);
+        const error = (message, code = "upstream_error") => {
+          write(`data: ${buildQoderErrorFrame(message, code)}\n\n${SSE_DONE}`);
         };
 
         keepalive();
@@ -753,6 +814,33 @@ function createQoderQueueRetryResponse({
         let queueInfo = initialQueueInfo;
         let attempt = 0;
         let timeoutAttempts = 0;
+
+        const fetchQueueAttempt = async () => {
+          let lastTransportError = null;
+          for (let networkAttempt = 0; networkAttempt <= QODER_NETWORK_RETRY_MAX_ATTEMPTS; networkAttempt++) {
+            let response;
+            try {
+              response = await doFetch(true);
+            } catch (err) {
+              lastTransportError = err;
+              if (!isQoderRetryableFetchError(err, signal) || networkAttempt >= QODER_NETWORK_RETRY_MAX_ATTEMPTS) throw err;
+              log?.warn?.("QODER", `queued retry transport failure (${formatQoderSocketError(err)}), network retry ${networkAttempt + 1}/${QODER_NETWORK_RETRY_MAX_ATTEMPTS}`);
+              continue;
+            }
+
+            const inspected = await inspectQoderResponse(response, inspectCtx);
+            if (inspected.transportError) {
+              lastTransportError = inspected.transportError;
+              if (!isQoderRetryableFetchError(inspected.transportError, signal) || networkAttempt >= QODER_NETWORK_RETRY_MAX_ATTEMPTS) {
+                throw inspected.transportError;
+              }
+              log?.warn?.("QODER", `queued retry stream failure (${formatQoderSocketError(inspected.transportError)}), network retry ${networkAttempt + 1}/${QODER_NETWORK_RETRY_MAX_ATTEMPTS}`);
+              continue;
+            }
+            return inspected;
+          }
+          throw lastTransportError || new Error("queued retry failed");
+        };
 
         try {
           while (queueInfo?.queued) {
@@ -764,7 +852,10 @@ function createQoderQueueRetryResponse({
                 "QODER",
                 `${isTimeout ? "timeout" : "queue"} retry limit reached after ${used}/${budget.maxAttempts} attempts`,
               );
-              error(isTimeout ? "timeout retry limit reached" : "queue retry limit reached");
+              error(
+                isTimeout ? "timeout retry limit reached" : "queue retry limit reached",
+                "server_is_overloaded",
+              );
               return;
             }
 
@@ -781,15 +872,16 @@ function createQoderQueueRetryResponse({
 
             await sleepFn(delay, signal);
 
-            let response;
+            let inspected;
             try {
-              response = await doFetch(true);
+              inspected = await fetchQueueAttempt();
             } catch (err) {
-              error(`retry failed: ${err.message}`);
+              error(
+                `retry failed: ${err.message}`,
+                isQoderRetryableFetchError(err, signal) ? "stream_disconnected" : "upstream_error",
+              );
               return;
             }
-
-            const inspected = await inspectQoderResponse(response, inspectCtx);
             queueInfo = inspected;
 
             if (queueInfo.queued) continue;
@@ -806,7 +898,18 @@ function createQoderQueueRetryResponse({
                   if (text) message = text;
                 } catch {}
               }
-              error(message);
+              const code = inspected.errorInfo
+                ? resolveCodexErrorCode({
+                  status: inspected.errorInfo.status,
+                  message,
+                  fallbackCode: inspected.errorInfo.code || "upstream_error",
+                })
+                : resolveCodexErrorCode({
+                  status: inspected.response?.status,
+                  message,
+                  fallbackCode: "upstream_error",
+                });
+              error(message, code);
               return;
             }
 
@@ -814,15 +917,15 @@ function createQoderQueueRetryResponse({
             // behaviour as a direct one, otherwise the "announce then stop" gap only
             // shows up on the queued path.
             const wrapped = wrapQoderSSE(inspected.response, model, {
+              signal,
               metrics,
               continueFetch,
-        metrics,
               hasTools,
               maxContinuations,
               log,
             });
             if (!wrapped.body) {
-              error("upstream returned an empty stream");
+              error("upstream returned an empty stream", "stream_disconnected");
               return;
             }
 
@@ -835,9 +938,14 @@ function createQoderQueueRetryResponse({
             return;
           }
 
-          error("queue wait completed without an upstream response");
+          error("queue wait completed without an upstream response", "server_is_overloaded");
         } catch (err) {
-          if (!stopped) error(err.message || String(err));
+          if (!stopped) {
+            error(
+              err.message || String(err),
+              isQoderSocketCloseError(err, signal) ? "stream_disconnected" : "upstream_error",
+            );
+          }
         } finally {
           if (keepaliveTimer) {
             clearInterval(keepaliveTimer);
@@ -1183,6 +1291,7 @@ async function buildQoderRequestBody({ model, body, credentials, log, proxyOptio
 function wrapQoderSSE(response, model, opts = {}) {
   const {
     keepaliveMs = QODER_KEEPALIVE_MS,
+    signal = null,
     continueFetch = null,
     maxContinuations = QODER_AUTO_CONTINUE_MAX,
     hasTools = false,
@@ -1196,11 +1305,13 @@ function wrapQoderSSE(response, model, opts = {}) {
   let buffer = "";
   let doneEmitted = false;
   let upstreamEnded = false;
+  let upstreamTermination = null;
   let keepaliveTimer = null;
   let reader = null;
 
   // Per-turn trackers used by the auto-continue guard.
   let sawToolCall = false;
+  let sawFinishReason = false;
   let lastFinish = null;
   let turnText = "";
   let continuationsUsed = 0;
@@ -1217,6 +1328,29 @@ function wrapQoderSSE(response, model, opts = {}) {
     return typeof reason === "string" && reason.length > 0 && reason !== "tool_calls";
   };
 
+  const setTermination = (reason) => {
+    upstreamTermination = reason;
+    if (metrics) metrics.streamTermination = reason;
+  };
+
+  const isAbortError = (error) =>
+    error?.name === "AbortError" || error?.code === "ABORT_ERR";
+
+  const isClientAbort = (error) => {
+    if (!isAbortError(error) || !signal?.aborted) return false;
+    const reason = signal.reason;
+    return !reason || isAbortError(reason);
+  };
+
+  const emitStreamFailure = (controller, code, message) => {
+    if (doneEmitted) return;
+    heldFinishFrame = null;
+    const frame = buildQoderErrorFrame(message, code);
+    controller.enqueue(encoder.encode(`data: ${frame}\n\n`));
+    controller.enqueue(encoder.encode(SSE_DONE));
+    doneEmitted = true;
+  };
+
   let reasoningDeltas = 0;
   const trackChunk = (chunk) => {
     if (typeof chunk?.choices?.[0]?.delta?.reasoning_content === "string" && chunk.choices[0].delta.reasoning_content) {
@@ -1229,7 +1363,25 @@ function wrapQoderSSE(response, model, opts = {}) {
       sawToolCall = true;
     }
     if (typeof choice.delta?.content === "string") turnText += choice.delta.content;
-    if (choice.finish_reason) lastFinish = choice.finish_reason;
+    if (choice.finish_reason) {
+      sawFinishReason = true;
+      lastFinish = choice.finish_reason;
+    }
+  };
+
+  const handleDoneSignal = (controller) => {
+    if (!sawFinishReason) {
+      setTermination("premature_done");
+      emitStreamFailure(
+        controller,
+        "stream_disconnected",
+        `${model}: upstream sent [DONE] before a terminal chunk`,
+      );
+      upstreamEnded = true;
+      return;
+    }
+    setTermination("clean_done");
+    upstreamEnded = true;
   };
 
   // Qoder envelope line: data: {"statusCodeValue":200,"body":"<openai chunk>"}
@@ -1241,7 +1393,7 @@ function wrapQoderSSE(response, model, opts = {}) {
 
     const data = trimmed.slice(5).trimStart();
     if (data === "[DONE]") {
-      upstreamEnded = true;
+      handleDoneSignal(controller);
       return;
     }
 
@@ -1271,14 +1423,16 @@ function wrapQoderSSE(response, model, opts = {}) {
         ? withRetryAfterHint(truncate(msg, 400), 30000)
         : truncate(msg, 1600);
       const errFrame = JSON.stringify({ error: { message: inbandMessage, type: "server_error", code: inbandCode } });
+      heldFinishFrame = null;
       controller.enqueue(encoder.encode(`data: ${errFrame}\n\n`));
       controller.enqueue(encoder.encode(SSE_DONE));
+      setTermination("upstream_error");
       doneEmitted = true;
       return;
     }
     if (!inner) return;
     if (inner === "[DONE]") {
-      upstreamEnded = true;
+      handleDoneSignal(controller);
       return;
     }
     // Inner is an OpenAI-shaped chunk. Strip any embedded newlines so the
@@ -1288,6 +1442,13 @@ function wrapQoderSSE(response, model, opts = {}) {
     const sanitized = inner.replace(/\r?\n/g, "");
     let chunk = null;
     try { chunk = JSON.parse(sanitized); } catch {}
+    if (chunk?.error) {
+      heldFinishFrame = null;
+      controller.enqueue(encoder.encode(`data: ${sanitized}\n\n`));
+      setTermination("upstream_error");
+      upstreamEnded = true;
+      return;
+    }
     if (chunk) trackChunk(chunk);
     if (isHeldTerminal(chunk)) {
       heldFinishFrame = `data: ${sanitized}\n\n`;
@@ -1306,11 +1467,18 @@ function wrapQoderSSE(response, model, opts = {}) {
     if (doneEmitted || upstreamEnded) return;
     const data = trimmed.slice(5).trimStart();
     if (data === "[DONE]") {
-      upstreamEnded = true;
+      handleDoneSignal(controller);
       return;
     }
     let chunk = null;
     try { chunk = JSON.parse(data); } catch { return; }
+    if (chunk?.error) {
+      heldFinishFrame = null;
+      controller.enqueue(encoder.encode(`data: ${data}\n\n`));
+      setTermination("upstream_error");
+      upstreamEnded = true;
+      return;
+    }
     trackChunk(chunk);
     if (isHeldTerminal(chunk)) {
       heldFinishFrame = `data: ${data}\n\n`;
@@ -1337,7 +1505,17 @@ function wrapQoderSSE(response, model, opts = {}) {
         reader = currentReader;
         const handle = kind === "qoder" ? processLine : processOpenAILine;
         while (true) {
-          const { done, value } = await reader.read();
+          let readResult;
+          try {
+            readResult = await reader.read();
+          } catch (error) {
+            // A rejected read is a transport failure even if Qoder already sent
+            // a finish_reason. Only a normal EOF may be treated as a missing
+            // optional [DONE] marker; otherwise the held finish frame would turn
+            // a truncated answer into a successful Codex turn.
+            throw error;
+          }
+          const { done, value } = readResult;
           if (done) return true;
           buffer += decoder.decode(value, { stream: true });
           let nl;
@@ -1362,14 +1540,21 @@ function wrapQoderSSE(response, model, opts = {}) {
         }
       };
 
+      const classifyEndOfStream = () => {
+        if (doneEmitted || upstreamEnded || upstreamTermination) return;
+        setTermination(sawFinishReason ? "finish_without_done" : "premature_eof");
+      };
+
       let failure = null;
       let kind = "qoder";
       try {
         let ended = await pump(response.body.getReader(), kind);
         flushBuffer(kind);
+        if (ended) classifyEndOfStream();
         while (
           ended &&
           !doneEmitted &&
+          upstreamTermination !== "upstream_error" &&
           continueFetch &&
           continuationsUsed < maxContinuations &&
           hasTools &&
@@ -1391,17 +1576,46 @@ function wrapQoderSSE(response, model, opts = {}) {
             nextStream = await continueFetch(turnText);
           } catch (err) {
             log?.warn?.("QODER", `auto-continue request failed: ${err.message}`);
+            setTermination("upstream_error");
+            emitStreamFailure(
+              controller,
+              "stream_disconnected",
+              `${model}: auto-continue request failed (${formatQoderSocketError(err)})`,
+            );
           }
-          if (!nextStream || !nextStream.body) break;
+          if (doneEmitted) break;
+          if (!nextStream || !nextStream.body) {
+            setTermination("upstream_error");
+            emitStreamFailure(
+              controller,
+              "stream_disconnected",
+              `${model}: auto-continue returned no stream`,
+            );
+            break;
+          }
           sawToolCall = false;
+          sawFinishReason = false;
           lastFinish = null;
           turnText = "";
           upstreamEnded = false;
+          upstreamTermination = null;
           kind = "openai";
           ended = await pump(nextStream.body.getReader(), kind);
           flushBuffer(kind);
+          if (ended) classifyEndOfStream();
         }
-        log?.info?.(CODE_LOG, `stream_done reasoning_events=${reasoningDeltas} continuations=${continuationsUsed}`);
+        if (!doneEmitted && upstreamTermination === "premature_eof") {
+          log?.warn?.("QODER", `${model}: upstream stream closed before a terminal chunk`);
+          emitStreamFailure(
+            controller,
+            "stream_disconnected",
+            `${model}: upstream stream closed before a terminal chunk`,
+          );
+        }
+        log?.info?.(
+          CODE_LOG,
+          `stream_done reasoning_events=${reasoningDeltas} continuations=${continuationsUsed} termination=${upstreamTermination || "unknown"}`,
+        );
         if (!doneEmitted) {
           // No continuation will follow: release the terminal frame now so the
           // client closes the turn exactly as it did before this guard existed.
@@ -1413,7 +1627,19 @@ function wrapQoderSSE(response, model, opts = {}) {
           doneEmitted = true;
         }
       } catch (err) {
-        if (!doneEmitted) failure = err;
+        if (!doneEmitted) {
+          if (isClientAbort(err)) {
+            failure = err;
+          } else {
+            setTermination("upstream_error");
+            log?.warn?.("QODER", `${model}: upstream stream read failed · ${formatQoderSocketError(err)}`);
+            emitStreamFailure(
+              controller,
+              "stream_disconnected",
+              `${model}: upstream stream failed before a terminal chunk (${formatQoderSocketError(err)})`,
+            );
+          }
+        }
       } finally {
         if (keepaliveTimer) {
           clearInterval(keepaliveTimer);
@@ -1634,11 +1860,49 @@ export class QoderExecutor extends BaseExecutor {
         ],
       };
       const built = await buildQoderRequestBody({ model, body: nudgedBody, credentials, log, proxyOptions, signal, clientSessionId });
-      const req = makeAttemptRequest(true, built.payload);
-      const resp = await fetchRequest(req);
+      let continuationRequest = makeAttemptRequest(true, built.payload);
+      const doContinuationFetch = async (refreshIds = false) => {
+        if (refreshIds) continuationRequest = makeAttemptRequest(true, built.payload);
+        return fetchRequest(continuationRequest);
+      };
+
+      let resp;
+      try {
+        resp = await fetchRequest(continuationRequest);
+      } catch (error) {
+        if (!isQoderRetryableFetchError(error, signal)) return null;
+        // A continuation is a real upstream request and can hit the same
+        // transport failure as the initial request. Return the retry stream so
+        // the outer wrapper can splice it into the current response instead of
+        // converting the failure into an immediate truncated turn.
+        return createQoderNetworkRetryResponse({
+          initialError: error,
+          model: `qoder/${qoderKey}`,
+          signal,
+          log,
+          doFetch: doContinuationFetch,
+          inspectCtx,
+          metrics,
+          maxContinuations: 0,
+          timeoutRetryOptions: timeoutPolicy.timeoutOptions,
+        });
+      }
       const inspectedNext = await inspectQoderResponse(resp, inspectCtx);
-      if (inspectedNext.queued || inspectedNext.errorInfo || !inspectedNext.response?.ok) return null;
-      return wrapQoderSSE(inspectedNext.response, `qoder/${qoderKey}`, { metrics, log });
+      if (inspectedNext.queued) {
+        return createQoderQueueRetryResponse({
+          initialQueueInfo: inspectedNext,
+          model: `qoder/${qoderKey}`,
+          signal,
+          log,
+          doFetch: doContinuationFetch,
+          timeoutRetryOptions: timeoutPolicy.timeoutOptions,
+          inspectCtx,
+          metrics,
+          maxContinuations: 0,
+        });
+      }
+      if (inspectedNext.errorInfo || !inspectedNext.response?.ok) return null;
+      return wrapQoderSSE(inspectedNext.response, `qoder/${qoderKey}`, { signal, metrics, log });
     };
     const autoContinueMax = await resolveAutoContinueMax();
     const timeoutPolicy = await resolveTimeoutPolicyForRequest({ log });
@@ -1646,7 +1910,7 @@ export class QoderExecutor extends BaseExecutor {
     try {
       response = await doFetch();
     } catch (error) {
-      if (!isQoderSocketCloseError(error, signal)) throw error;
+      if (!isQoderRetryableFetchError(error, signal)) throw error;
       const retrying = createQoderNetworkRetryResponse({
         initialError: error,
         model: `qoder/${qoderKey}`,
@@ -1668,6 +1932,28 @@ export class QoderExecutor extends BaseExecutor {
       };
     }
     const inspected = await inspectQoderResponse(response, inspectCtx);
+
+    if (inspected.transportError) {
+      const retrying = createQoderNetworkRetryResponse({
+        initialError: inspected.transportError,
+        model: `qoder/${qoderKey}`,
+        signal,
+        log,
+        doFetch,
+        inspectCtx,
+        continueFetch,
+        metrics,
+        hasTools: Array.isArray(body.tools) && body.tools.length > 0,
+        maxContinuations: autoContinueMax,
+        timeoutRetryOptions: timeoutPolicy.timeoutOptions,
+      });
+      return {
+        response: retrying,
+        url,
+        headers: currentAttemptRequest.headers,
+        transformedBody: currentAttemptRequest.payload,
+      };
+    }
 
     if (inspected.errorInfo) {
       // Hard upstream rejection (context overflow / bad history / moderation).
@@ -1714,6 +2000,7 @@ export class QoderExecutor extends BaseExecutor {
     // the next step (no tool call), issue one hidden continuation request and
     // splice its stream into this response so the agent loop keeps running.
     const wrapped = wrapQoderSSE(response, `qoder/${qoderKey}`, {
+      signal,
       metrics,
       maxContinuations: autoContinueMax,
       timeoutRetryOptions: timeoutPolicy.timeoutOptions,

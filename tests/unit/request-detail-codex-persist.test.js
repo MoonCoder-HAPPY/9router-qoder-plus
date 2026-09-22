@@ -53,4 +53,45 @@ describe("request details persist the Codex metrics block", () => {
     expect(detail, "detail row was never flushed").toBeTruthy();
     expect(detail.codex).toEqual({ reasoningEvents: 7, contextPeakEstimate: 1234, contextLimit: 500000 });
   }, 20000);
+
+  it("does not let a late streaming snapshot overwrite a terminal status", async () => {
+    const { saveRequestDetail, getRequestDetailById } = await import("../../src/lib/usageDb.js");
+    const base = {
+      id: "detail-terminal-wins",
+      provider: "qoder",
+      model: "dfmodel",
+      timestamp: new Date().toISOString(),
+      latency: { ttft: 1, total: 2 },
+      tokens: { prompt_tokens: 1, completion_tokens: 1 },
+      request: { model: "dfmodel" },
+    };
+
+    await saveRequestDetail({
+      ...base,
+      status: "success",
+      providerResponse: "final",
+      response: { content: "final", type: "streaming" },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    await saveRequestDetail({
+      ...base,
+      status: "streaming",
+      providerResponse: "in progress",
+      response: { content: "[Streaming in progress...]", type: "streaming" },
+    });
+
+    let detail = null;
+    for (let attempt = 0; attempt < 40 && !detail; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      detail = await getRequestDetailById("detail-terminal-wins");
+      if (detail?.status !== "success") detail = null;
+    }
+
+    expect(detail).toMatchObject({
+      id: "detail-terminal-wins",
+      status: "success",
+      providerResponse: "final",
+    });
+  }, 20000);
 });

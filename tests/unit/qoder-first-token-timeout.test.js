@@ -114,7 +114,7 @@ describe("Qoder first-token timeout handling", () => {
     const text = await response.text();
 
     expect(calls).toBe(2);
-    expect(text).toContain("[qoder error");
+    expect(text).toContain('"code":"server_is_overloaded"');
     expect(text).toContain("timeout retry limit reached");
     expect(text).toContain("data: [DONE]");
   });

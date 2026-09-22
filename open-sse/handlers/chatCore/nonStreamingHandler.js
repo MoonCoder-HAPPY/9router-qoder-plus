@@ -20,6 +20,21 @@ function parseToolArguments(value) {
   }
 }
 
+function getStructuredResponseError(responseBody) {
+  const raw = responseBody?.error;
+  const failedResponse = responseBody?.status === "failed" || responseBody?.response?.status === "failed";
+  if (!raw && !failedResponse) return null;
+  if (!raw && failedResponse) {
+    return { message: "Upstream provider returned a failed response" };
+  }
+  if (typeof raw === "string") return { message: raw };
+  if (typeof raw !== "object") return { message: String(raw) };
+  return {
+    ...raw,
+    message: raw.message || "Upstream provider returned an error",
+  };
+}
+
 function openAICompletionToClaudeMessage(responseBody) {
   if (!responseBody?.choices?.[0]) return responseBody;
   const choice = responseBody.choices[0];
@@ -219,6 +234,30 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
       console.error(`[ChatCore] Failed to parse JSON from ${provider}:`, err.message);
       return createErrorResult(HTTP_STATUS.BAD_GATEWAY, `Invalid JSON response from ${provider}`);
     }
+  }
+
+  const structuredError = getStructuredResponseError(responseBody);
+  if (structuredError) {
+    const errorMessage = structuredError.code
+      ? `${structuredError.message} (${structuredError.code})`
+      : structuredError.message;
+    const errorStatus = providerResponse.status >= 400 ? providerResponse.status : HTTP_STATUS.BAD_GATEWAY;
+    reqLogger.logProviderResponse(providerResponse.status, providerResponse.statusText, providerResponse.headers, responseBody);
+    appendLog({ status: `FAILED ${errorStatus}` });
+    saveRequestDetail(buildRequestDetail({
+      provider, model, connectionId, apiKeyIdentity,
+      latency: { ttft: 0, total: Date.now() - requestStartTime },
+      tokens: { prompt_tokens: 0, completion_tokens: 0 },
+      request: extractRequestConfig(body, stream),
+      providerRequest: finalBody || translatedBody || null,
+      providerResponse: responseBody,
+      response: { error: errorMessage, status: errorStatus, thinking: null },
+      pxpipe,
+      status: "error"
+    }, { endpoint: clientRawRequest?.endpoint || null })).catch(err => {
+      console.error("[RequestDetail] Failed to save error:", err.message);
+    });
+    return createErrorResult(errorStatus, errorMessage);
   }
 
   reqLogger.logProviderResponse(providerResponse.status, providerResponse.statusText, providerResponse.headers, responseBody);

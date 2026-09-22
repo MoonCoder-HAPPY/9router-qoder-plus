@@ -508,24 +508,26 @@ describe("wrapQoderSSE", () => {
     return buf;
   }
 
-  it("forwards an OpenAI envelope chunk and emits [DONE] in flush", async () => {
+  it("fails an OpenAI envelope stream that closes without a terminal chunk", async () => {
     const inner = JSON.stringify({ choices: [{ delta: { content: "hi" } }] });
     const upstream = `data: ${JSON.stringify({ statusCodeValue: 200, body: inner })}\n\n`;
     const wrapped = wrapQoderSSE(makeResponse([upstream]), "qoder/auto");
     const out = await drain(wrapped);
     expect(out).toContain(`data: ${inner}\n\n`);
+    expect(out).toContain('"code":"stream_disconnected"');
     expect(out).toContain("data: [DONE]\n\n");
   });
 
   // Regression for review finding #4: a final data: line without a trailing
   // newline used to be silently dropped from `buffer` in flush().
   it("drains a trailing partial line without a newline in flush()", async () => {
-    const inner = JSON.stringify({ choices: [{ delta: { content: "tail" } }], finish_reason: "stop" });
+    const inner = JSON.stringify({ choices: [{ delta: { content: "tail" }, finish_reason: "stop" }] });
     // Note: NO trailing \n on the final line.
     const upstream = `data: ${JSON.stringify({ statusCodeValue: 200, body: inner })}`;
     const wrapped = wrapQoderSSE(makeResponse([upstream]), "qoder/auto");
     const out = await drain(wrapped);
     expect(out).toContain(`data: ${inner}\n\n`);
+    expect(out).not.toContain('"code":"stream_disconnected"');
   });
 
   // Regression for review finding #3: chunks could leak past [DONE] when

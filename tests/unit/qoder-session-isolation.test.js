@@ -86,4 +86,26 @@ describe("Qoder session isolation", () => {
 
     expect(sessionA.payload.session_id).not.toBe(sessionB.payload.session_id);
   });
+
+  it("does not fall back to an account-wide session for independent first turns", async () => {
+    const credentials = {
+      accessToken: "test-token",
+      connectionId: "same-qoder-connection",
+      providerSpecificData: { userId: "same-qoder-account" },
+    };
+    const body = { messages: [{ role: "user", content: "same prompt" }], tools: [] };
+
+    const sessionA = await qoderInternals.buildQoderRequestBody({
+      model: "qoder/qmodel_latest",
+      body,
+      credentials,
+    });
+    const sessionB = await qoderInternals.buildQoderRequestBody({
+      model: "qoder/qmodel_latest",
+      body,
+      credentials,
+    });
+
+    expect(sessionA.payload.session_id).not.toBe(sessionB.payload.session_id);
+  });
 });

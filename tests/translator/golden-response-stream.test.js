@@ -113,6 +113,15 @@ describe("GOLDEN response stream: OpenAI-Responses (codex) → OpenAI", () => {
     const events = [
       { type: "error", error: { message: "model_not_found" } },
     ];
-    expect(runStream(FORMATS.OPENAI_RESPONSES, FORMATS.OPENAI, events)).toMatchSnapshot();
+    const output = runStream(FORMATS.OPENAI_RESPONSES, FORMATS.OPENAI, events);
+    expect(output).toHaveLength(1);
+    expect(output[0]).toMatchObject({
+      object: "chat.completion.chunk",
+      error: {
+        type: "stream_error",
+        code: "upstream_error",
+        message: "model_not_found",
+      },
+    });
   });
 });

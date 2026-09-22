@@ -5,9 +5,9 @@
 
 import { handleChatCore } from "./chatCore.js";
 import { convertResponsesApiFormat } from "../translator/formats/responsesApi.js";
-import { createResponsesApiTransformStream } from "../transformer/responsesTransformer.js";
 import { convertResponsesStreamToJson } from "../transformer/streamToJsonConverter.js";
 import { SSE_HEADERS_CORS } from "../utils/sseConstants.js";
+import { createErrorResult } from "../utils/error.js";
 
 /**
  * Handle /v1/responses request
@@ -58,6 +58,13 @@ export async function handleResponsesCore({ body, modelInfo, credentials, log, o
     try {
       const jsonResponse = await convertResponsesStreamToJson(response.body);
 
+      if (jsonResponse.status === "failed") {
+        return createErrorResult(
+          502,
+          jsonResponse.error?.message || "Upstream Responses stream failed",
+        );
+      }
+
       return {
         success: true,
         response: new Response(JSON.stringify(jsonResponse), {
@@ -79,14 +86,15 @@ export async function handleResponsesCore({ body, modelInfo, credentials, log, o
     }
   }
 
-  // Case 2: Client wants streaming, got SSE - transform it
+  // Case 2: Client wants streaming, got SSE. handleChatCore already receives
+  // sourceFormat=openai-responses and therefore emits the final Responses SSE
+  // format through its normal translator pipeline. Applying the legacy
+  // Chat-Completions transformer here a second time discards Responses events
+  // (including response.failed) and its flush() fabricates response.completed.
   if (clientRequestedStreaming && contentType.includes("text/event-stream")) {
-    const transformStream = createResponsesApiTransformStream(null);
-    const transformedBody = response.body.pipeThrough(transformStream);
-
     return {
       success: true,
-      response: new Response(transformedBody, {
+      response: new Response(response.body, {
         status: 200,
         headers: { ...SSE_HEADERS_CORS }
       })
