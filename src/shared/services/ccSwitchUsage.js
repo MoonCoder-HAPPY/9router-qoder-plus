@@ -1,6 +1,7 @@
 import {
   evaluateApiKeyProviderCreditUsage,
   getProviderPolicy,
+  getQoderActualAvailability,
 } from "@/shared/services/apiKeyPolicy.js";
 
 function effectiveTotal(row) {
@@ -64,10 +65,15 @@ export function buildCcSwitchUsage({ keyName, providerPolicy, accounts = [] }) {
     const total = qoderPolicy.allocationLimit;
     const used = Math.max(0, Number(state.used) || 0);
     const remaining = Math.max(0, total - used);
+    const actual = getQoderActualAvailability(qoderPolicy, accounts);
     return {
-      isValid: true,
-      balance: remaining,
-      remaining,
+      isValid: actual.availabilityStatus === "ok",
+      balance: actual.availableRemaining,
+      remaining: actual.availableRemaining,
+      allocationRemaining: remaining,
+      availabilityStatus: actual.availabilityStatus,
+      quotaCheckedAt: actual.quotaCheckedAt,
+      ...(actual.availabilityStatus !== "ok" ? { invalidMessage: "Unable to confirm current Qoder balance" } : {}),
       total,
       used,
       unit: "credits",
@@ -79,13 +85,18 @@ export function buildCcSwitchUsage({ keyName, providerPolicy, accounts = [] }) {
   const rows = accountRows(accounts);
   const total = rows.reduce((sum, row) => sum + effectiveTotal(row), 0);
   const used = rows.reduce((sum, row) => sum + Math.max(0, Number(row.used) || 0), 0);
-  const remaining = Math.max(0, total - used);
+  const unavailable = accounts.some(account => account.quotaStatus !== "ok"
+    || account.remainingQuota == null || !Number.isFinite(Number(account.remainingQuota)));
+  const remaining = unavailable ? null : Math.max(0, rows.reduce((sum, row) => sum + (Number(row.remaining) || 0), 0));
   return {
-    isValid: true,
+    isValid: !unavailable,
     balance: remaining,
     remaining,
     total,
     used,
+    availabilityStatus: unavailable ? "unavailable" : "ok",
+    quotaCheckedAt: unavailable ? null : accounts.map(account => account.quotaCheckedAt).filter(Boolean).sort()[0] || null,
+    ...(unavailable ? { invalidMessage: "Unable to confirm current Qoder balance" } : {}),
     unit: "credits",
     planName: "Qoder all accounts",
     extra: buildExtra({ accounts }),

@@ -18,6 +18,9 @@ import StatusAlert from "./components/StatusAlert";
 import Tooltip from "./components/Tooltip";
 import SecurityWarning from "./components/SecurityWarning";
 import ApiKeyRestrictionsModal from "./components/ApiKeyRestrictionsModal";
+import { readQuotaEvents } from "@/shared/services/quotaStreamClient.js";
+import { useQuotaRefresh } from "@/shared/hooks/useQuotaRefresh.js";
+import { translate } from "@/i18n/runtime";
 
 function formatNumber(value) {
   const n = Number(value);
@@ -34,6 +37,10 @@ export default function APIPageClient({ machineId }) {
   const [confirmState, setConfirmState] = useState(null);
   const [editingRestrictionsKey, setEditingRestrictionsKey] = useState(null);
   const [keyQuotaUsage, setKeyQuotaUsage] = useState({});
+  const quotaRequest = useRef(null);
+  const quotaGeneration = useRef(0);
+  useEffect(() => () => { quotaGeneration.current++; quotaRequest.current?.abort(); }, []);
+  useQuotaRefresh(() => loadKeyQuotaUsage(keys), keys.some(key => key.policy?.enabled && key.policy?.providers?.qoder));
 
   const [requireApiKey, setRequireApiKey] = useState(false);
   const [requireLogin, setRequireLogin] = useState(true);
@@ -280,18 +287,25 @@ export default function APIPageClient({ machineId }) {
   };
 
   async function loadKeyQuotaUsage(nextKeys) {
+    const generation = ++quotaGeneration.current;
+    quotaRequest.current?.abort();
+    const controller = new AbortController();
+    quotaRequest.current = controller;
     const restrictedKeys = (nextKeys || []).filter((key) => key.policy?.enabled && key.policy?.providers?.qoder);
     if (restrictedKeys.length === 0) {
       setKeyQuotaUsage({});
       return;
     }
     try {
-      const res = await fetch("/api/keys/quota-options", { cache: "no-store" });
-      if (!res.ok) return setKeyQuotaUsage({});
-      const data = await res.json();
-      setKeyQuotaUsage(data?.providers?.qoder?.keyUsageByKeyId || {});
+      setKeyQuotaUsage(previous => Object.fromEntries(Object.entries(previous).map(([id, usage]) => [id, { ...usage, availableRemaining: null, quotaCheckedAt: null }])));
+      const res = await fetch("/api/keys/quota-options?stream=1", { cache: "no-store", signal: controller.signal });
+      await readQuotaEvents(res, event => {
+        if (quotaGeneration.current !== generation) return;
+        if (event.type === "snapshot") setKeyQuotaUsage(event.providers?.qoder?.keyUsageByKeyId || {});
+        else if (event.type === "account") setKeyQuotaUsage(event.keyUsageByKeyId || {});
+      }, controller.signal);
     } catch {
-      setKeyQuotaUsage({});
+      if (quotaGeneration.current === generation) setKeyQuotaUsage({});
     }
   }
 
@@ -723,6 +737,17 @@ export default function APIPageClient({ machineId }) {
     return `Qoder: ${accountCount || "all"} accounts, ${credits} credits`;
   };
 
+  const describeActualAvailability = key => {
+    const usage = keyQuotaUsage[key.id];
+    const amount = usage?.availableRemaining;
+    const checkedAt = usage?.quotaCheckedAt;
+    return <>
+      <span>{translate("Actual available")}</span>: {amount == null ? <span>{translate("Unable to confirm current Qoder balance")}</span> : formatNumber(amount)} credits
+      <span> · </span><span>{translate("Shared balance, first come first served")}</span>
+      {checkedAt && <><span> · </span><span>{translate("Last checked")}</span>: {new Date(checkedAt).toLocaleTimeString()}</>}
+    </>;
+  };
+
   const [baseUrl, setBaseUrl] = useState("/v1");
 
   // Hydration fix: Only access window on client side
@@ -1069,6 +1094,12 @@ export default function APIPageClient({ machineId }) {
                   <p className="text-xs text-text-muted mt-1">
                     {describeKeyPolicy(key)}
                   </p>
+                  {key.policy?.enabled && key.policy?.providers?.qoder && (
+                    <div className="mt-1 text-xs text-text-muted">
+                      <span data-testid={`key-actual-availability-${key.id}`}>{describeActualAvailability(key)}</span>
+                      <button type="button" onClick={() => loadKeyQuotaUsage(keys)} className="ml-2 underline" aria-label={translate("Refresh quota")}>{translate("Refresh quota")}</button>
+                    </div>
+                  )}
                   {key.isActive === false && (
                     <p className="text-xs text-orange-500 mt-1">Paused</p>
                   )}

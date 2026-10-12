@@ -5,7 +5,8 @@ import PropTypes from "prop-types";
 import { Button, ConfirmModal, Input, Modal, Toggle } from "@/shared/components";
 import { translate } from "@/i18n/runtime";
 import { readQuotaEvents } from "@/shared/services/quotaStreamClient.js";
-import { getQoderAccountAllocationState, getQoderPersistedCreditUsage } from "@/shared/services/apiKeyPolicy.js";
+import { getQoderAccountAllocationState, getQoderPersistedCreditUsage, getQoderActualAvailability } from "@/shared/services/apiKeyPolicy.js";
+import { useQuotaRefresh } from "@/shared/hooks/useQuotaRefresh.js";
 
 function normalizeEditablePolicy(policy) {
   const qoder = policy?.providers?.qoder || {};
@@ -57,11 +58,50 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
   const [serverExceeded, setServerExceeded] = useState(null);
   const [confirmResetUsage, setConfirmResetUsage] = useState(false);
   const [error, setError] = useState("");
+  const refreshRequest = useRef(null);
+  const refreshGeneration = useRef(0);
+
+  async function refreshQuota() {
+    if (!isOpen || !apiKeyItem || saving || resettingUsage || loadingOptions) return;
+    const generation = ++refreshGeneration.current;
+    const modalSession = session.current;
+    refreshRequest.current?.abort();
+    const controller = new AbortController();
+    refreshRequest.current = controller;
+    setQuotaOptions(previous => previous ? { ...previous, providers: { qoder: {
+      ...previous.providers.qoder,
+      accounts: previous.providers.qoder.accounts.map(account => account.quotaStatus === "missing" ? account
+        : { ...account, quotaStatus: "loading", remainingQuota: null, quotaCheckedAt: null }),
+    } } } : previous);
+    try {
+      const response = await fetch(`/api/keys/quota-options?stream=1&excludeKeyId=${encodeURIComponent(apiKeyItem.id)}`, { cache: "no-store", signal: controller.signal });
+      await readQuotaEvents(response, event => {
+        if (session.current !== modalSession || refreshGeneration.current !== generation) return;
+        if (event.type === "snapshot") setQuotaOptions(event);
+        else if (event.type === "account") setQuotaOptions(previous => previous ? { ...previous, providers: { qoder: {
+          ...previous.providers.qoder,
+          accounts: previous.providers.qoder.accounts.map(account => account.id === event.account.id ? event.account : account),
+          keyUsage: event.keyUsage,
+        } } } : previous);
+      }, controller.signal);
+    } catch {
+      if (session.current === modalSession && refreshGeneration.current === generation) setQuotaOptions(previous => previous ? { ...previous, providers: { qoder: {
+        ...previous.providers.qoder,
+        accounts: previous.providers.qoder.accounts.map(account => account.quotaStatus === "loading"
+          ? { ...account, quotaStatus: "unavailable", remainingQuota: null } : account),
+      } } } : previous);
+    }
+  }
+  useQuotaRefresh(refreshQuota, isOpen);
+  useEffect(() => () => { refreshGeneration.current++; refreshRequest.current?.abort(); }, [apiKeyItem, isOpen]);
 
   useEffect(() => {
     if (!isOpen || !apiKeyItem) return;
     const generation = ++session.current;
+    const quotaGeneration = ++refreshGeneration.current;
     const controller = new AbortController();
+    refreshRequest.current?.abort();
+    refreshRequest.current = controller;
     let cancelled = false;
     setForm(normalizeEditablePolicy(apiKeyItem.policy));
     setQuotaOptions(null);
@@ -74,7 +114,7 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
     fetch(`/api/keys/quota-options?stream=1&excludeKeyId=${encodeURIComponent(apiKeyItem.id)}`, { cache: "no-store", signal: controller.signal })
       .then(async (res) => {
         await readQuotaEvents(res, (event) => {
-          if (cancelled || session.current !== generation) return;
+          if (cancelled || session.current !== generation || refreshGeneration.current !== quotaGeneration) return;
           if (event.type === "snapshot") {
             setQuotaOptions(event);
             setLoadingOptions(false);
@@ -88,7 +128,7 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
         }, controller.signal);
       })
       .catch((e) => {
-        if (!cancelled) {
+        if (!cancelled && refreshGeneration.current === quotaGeneration) {
           setError(e.message);
           setQuotaOptions(previous => previous ? { ...previous, providers: { qoder: {
             ...previous.providers.qoder,
@@ -98,7 +138,7 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
         }
       })
       .finally(() => {
-        if (!cancelled) setLoadingOptions(false);
+        if (!cancelled && refreshGeneration.current === quotaGeneration) setLoadingOptions(false);
       });
     return () => { cancelled = true; session.current++; controller.abort(); };
   }, [apiKeyItem, isOpen]);
@@ -129,6 +169,8 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
   const totalAllocation = Object.values(form.accountAllocations).reduce((sum, value) => sum + (Number(value) || 0), 0);
   const previewUsed = form.connectionIds.reduce((sum, id) => sum + getExistingConsumedByAccount(savedPolicy, id), 0);
   const previewRemaining = Math.max(0, totalAllocation - previewUsed);
+  const previewActual = getQoderActualAvailability({ ...savedPolicy?.providers?.qoder,
+    connectionIds: form.connectionIds, accountAllocations: form.accountAllocations }, accounts);
   const allocationTooLow = form.enabled && form.connectionIds.some(id =>
     (Number(form.accountAllocations[id]) || 0) < getExistingConsumedByAccount(savedPolicy, id));
   const allocationTooHigh = form.enabled && selectedAccountList.some((account) => {
@@ -292,6 +334,11 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
                   <p className="col-span-full text-[11px] leading-snug text-text-muted">
                     {translate("Used credits belong to this key only. Total is its current allocation; editing allocations or refilling accounts does not reset usage.")}
                   </p>
+                  <div className="col-span-full rounded border border-border bg-surface-2 p-2" data-testid="quota-actual-availability">
+                    <p className="text-sm font-semibold">{translate("Actual available")}: {previewActual.availableRemaining == null ? translate("Unable to confirm current Qoder balance") : formatNumber(previewActual.availableRemaining)} credits</p>
+                    <p className="text-xs text-text-muted">{translate("Shared balance, first come first served")}{previewActual.quotaCheckedAt ? ` · ${translate("Last checked")}: ${new Date(previewActual.quotaCheckedAt).toLocaleTimeString()}` : ""}</p>
+                    <button type="button" onClick={refreshQuota} className="text-xs underline">{translate("Refresh quota")}</button>
+                  </div>
                 </div>
               )}
               <div className="max-h-72 overflow-auto">
@@ -474,6 +521,7 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
                           <span>Used</span>: <span>{formatNumber(usage.used)}</span>
                           <span> · </span>
                           <span>Remaining allocation</span>: <span>{formatNumber(usage.remaining)}</span>
+                          <span> · {translate("Actual available")}: {usage.availableRemaining == null ? translate("Unable to confirm current Qoder balance") : formatNumber(usage.availableRemaining)}</span>
                         </p>
                       </div>
                       <div className="flex items-center gap-1 shrink-0">

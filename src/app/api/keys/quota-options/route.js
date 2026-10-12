@@ -8,6 +8,7 @@ import {
   getAccountRemainingAllocation,
   getProviderPolicy,
   sumQoderRemainingQuota,
+  getQoderActualAvailability,
 } from "@/shared/services/apiKeyPolicy.js";
 import { getUsageForProvider } from "open-sse/services/usage.js";
 import { queryQuotaAccounts, quotaEventResponse } from "@/shared/services/quotaQuery.js";
@@ -71,6 +72,7 @@ export function buildQoderKeyUsageState(policy, accounts) {
     activeAccountName: activeAccount ? getConnectionName(activeAccount) : null,
     activeAccountEmail: activeAccount?.email || null,
     unavailableConnectionIds: usageState.unavailableConnectionIds || [],
+    ...getQoderActualAvailability(qoderPolicy, accounts),
   };
 }
 
@@ -123,11 +125,11 @@ export async function buildQoderQuotaOptions({ excludeKeyId = null, connectionId
     if (usage?.message || usage?.error) throw new Error(usage.message || usage.error);
     const summed = sumQoderRemainingQuota(usage);
     if (!summed.rows.length) throw new Error("Qoder quota is unavailable");
-    return { remainingQuota: summed.remaining, quotaRows: summed.rows, quotaStatus: "ok", quotaMessage: null };
+    return { remainingQuota: summed.remaining, quotaRows: summed.rows, quotaStatus: "ok", quotaMessage: null, quotaCheckedAt: new Date().toISOString() };
   }, (connection, result) => {
     const index = accounts.findIndex(account => account.id === connection.id);
     accounts[index] = { ...accounts[index], ...result };
-    emit?.({ type: "account", account: accounts[index], keyUsage: buildQoderKeyUsageState(currentKey?.policy, accounts) });
+    emit?.({ type: "account", account: accounts[index], keyUsage: buildQoderKeyUsageState(currentKey?.policy, accounts), keyUsageByKeyId: buildQoderKeyUsageByKeyId(keys, accounts) });
   }, { signal });
   if (!signal?.aborted) emit?.({ type: "complete" });
   return options();

@@ -21,12 +21,13 @@ async function readBalances(key) {
   expect(a.status).toBe(200);
   expect(b.status).toBe(200);
   const alias = await a.json(), primary = await b.json();
-  const { is_active, ...body } = alias;
+  const { is_active, quotaCheckedAt: _aliasCheckedAt, ...body } = alias;
   expect(is_active).toBe(true);
-  expect(body).toEqual(primary);
+  const { quotaCheckedAt: _primaryCheckedAt, ...primaryBody } = primary;
+  expect(body).toEqual(primaryBody);
   const platform = await quota.buildQoderQuotaOptions();
   expect(platform.providers.qoder.keyUsageByKeyId[key.id]).toMatchObject({
-    used: body.used, limit: body.total, remaining: body.remaining,
+    used: body.used, limit: body.total, remaining: body.allocationRemaining, availableRemaining: body.remaining,
   });
   return body;
 }
@@ -127,18 +128,38 @@ describe("allocation edits through real Key and CC-SWITCH APIs", () => {
     expect(replies.map(reply => reply.status).sort()).toEqual([200, 400]);
   });
 
-  it("returns Key accounting without upstream calls when account tokens fail or accounts are disabled", async () => {
+  it("keeps Key accounting but marks actual balance unknown when upstream fails, and zero when disabled", async () => {
     const key = await db.createApiKey("A", "test-machine");
     expect((await put(key, 3000)).status).toBe(200);
     await db.recordApiKeyQoderCreditUsage(key.key, connection.id, 1200);
     upstream.mockReset().mockRejectedValue(new Error("expired account token"));
     const headers = { authorization: `Bearer ${key.key}` };
     let res = await balance.GET(new Request("http://localhost/user/balance", { headers }));
-    expect(await res.json()).toMatchObject({ used: 1200, total: 3000, balance: 1800 });
-    expect(upstream).not.toHaveBeenCalled();
+    expect(await res.json()).toMatchObject({ isValid: false, used: 1200, total: 3000, allocationRemaining: 1800, balance: null });
+    expect(upstream).toHaveBeenCalledTimes(1);
     await db.updateProviderConnection(connection.id, { isActive: false });
     res = await balance.GET(new Request("http://localhost/user/balance", { headers }));
-    expect(await res.json()).toMatchObject({ used: 1200, total: 3000, balance: 1800 });
+    expect(await res.json()).toMatchObject({ used: 1200, total: 3000, allocationRemaining: 1800, balance: 0 });
+  });
+
+  it("follows official consumption, first-come shared spending and refill without rewriting key usage", async () => {
+    const a = await db.createApiKey("A", "test-machine"), b = await db.createApiKey("B", "test-machine");
+    expect((await put(a, 3000)).status).toBe(200);
+    expect((await put(b, 2000)).status).toBe(200);
+    await db.recordApiKeyQoderCreditUsage(a.key, connection.id, 1200);
+    await db.recordApiKeyQoderCreditUsage(b.key, connection.id, 700);
+    remaining = 800;
+    expect(await readBalances(a)).toMatchObject({ used: 1200, total: 3000, allocationRemaining: 1800, remaining: 800 });
+    expect(await readBalances(b)).toMatchObject({ used: 700, total: 2000, allocationRemaining: 1300, remaining: 800 });
+    await db.recordApiKeyQoderCreditUsage(a.key, connection.id, 300);
+    remaining = 500;
+    expect(await readBalances(a)).toMatchObject({ used: 1500, allocationRemaining: 1500, remaining: 500 });
+    expect(await readBalances(b)).toMatchObject({ used: 700, allocationRemaining: 1300, remaining: 500 });
+    remaining = 0;
+    expect(await readBalances(b)).toMatchObject({ used: 700, remaining: 0 });
+    remaining = 5000;
+    expect(await readBalances(a)).toMatchObject({ used: 1500, remaining: 1500 });
+    expect(await readBalances(b)).toMatchObject({ used: 700, remaining: 1300 });
   });
 
   it("retains history across disabling, re-enabling and removing an account", async () => {

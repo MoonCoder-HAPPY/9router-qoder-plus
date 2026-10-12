@@ -235,6 +235,12 @@ export async function getQoderUsage(accessToken, proxyOptions = null) {
     // siblings so the dashboard parser doesn't try to render them as rows.
     const userQuota = body.userQuota || {};
     const orgQuota = body.orgResourcePackage || {};
+    const validRemaining = quota => quota.remaining != null && quota.remaining !== ""
+      && Number.isFinite(Number(quota.remaining)) && Number(quota.remaining) >= 0;
+    if (!validRemaining(userQuota) || (body.orgResourcePackage != null
+      && !validRemaining(orgQuota) && Number(orgQuota.total ?? orgQuota.cap) !== 0)) {
+      return { message: "Qoder quota is unavailable" };
+    }
     // Qoder publishes a single absolute reset timestamp (`expiresAt` in ms);
     // surface it on every quota record as ISO so the table can render
     // "resets at" alongside used/total.

@@ -45,6 +45,7 @@ async function loadAccountUsage(connection, signal) {
       quotaStatus: "ok",
       remainingQuota: summed.remaining,
       quotaRows: summed.rows,
+      quotaCheckedAt: new Date().toISOString(),
     };
   } catch (error) {
     return {
@@ -103,22 +104,14 @@ export async function queryCcSwitchUsage(request, { includeActiveField = false }
     };
   }
 
-  let accounts = connections.map(connection => ({
-    id: connection.id,
-    name: connection.displayName || connection.name || connection.email || connection.id,
-    quotaStatus: "not_queried", remainingQuota: null, quotaRows: [],
-  }));
-  // A Key's allocation balance is stored locally and does not depend on an
-  // upstream quota query. Even an expired account token cannot erase it.
-  if (!allocated) {
-    const results = new Map();
-    await queryQuotaAccounts(connections, loadAccountUsage, (connection, result) => {
-      results.set(connection.id, { id: connection.id, name: connection.name || connection.id, ...result });
-    }, { signal: request.signal });
-    accounts = connections.map(connection => results.get(connection.id) || {
-      id: connection.id, quotaStatus: "unavailable", remainingQuota: null, quotaRows: [],
-    });
-  }
+  // Actual availability must include official-channel consumption.
+  const results = new Map();
+  await queryQuotaAccounts(connections, loadAccountUsage, (connection, result) => {
+    results.set(connection.id, { id: connection.id, name: connection.name || connection.id, ...result });
+  }, { signal: request.signal });
+  const accounts = connections.map(connection => results.get(connection.id) || {
+    id: connection.id, quotaStatus: "unavailable", remainingQuota: null, quotaRows: [],
+  });
 
   const usage = buildCcSwitchUsage({
     keyName: apiKeyRecord.name || apiKeyRecord.id,

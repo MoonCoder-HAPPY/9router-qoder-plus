@@ -386,6 +386,32 @@ export function getAccountRemainingAllocation(providerPolicy, connectionId) {
     - getQoderPersistedCreditUsage(providerPolicy, connectionId));
 }
 
+export function getQoderActualAvailability(providerPolicy, accounts = []) {
+  const byId = new Map(accounts.map(account => [account.id, account]));
+  let available = 0;
+  const unknown = [], checked = [];
+  for (const id of providerPolicy?.connectionIds || []) {
+    const budget = getAccountRemainingAllocation(providerPolicy, id);
+    if (budget <= 0) continue;
+    const account = byId.get(id);
+    // Missing/disabled accounts cannot be used, but their ledger survives.
+    if (!account || account.quotaStatus === "missing" || account.quotaStatus === "inactive") continue;
+    if ((account.quotaStatus != null && account.quotaStatus !== "ok")
+      || account.remainingQuota == null || !Number.isFinite(Number(account.remainingQuota))) {
+      unknown.push(id);
+      continue;
+    }
+    available += Math.min(budget, Math.max(0, Number(account.remainingQuota)));
+    if (account.quotaCheckedAt) checked.push(account.quotaCheckedAt);
+  }
+  return {
+    availableRemaining: unknown.length ? null : available,
+    availabilityStatus: unknown.length ? "unavailable" : "ok",
+    quotaCheckedAt: unknown.length || !checked.length ? null : checked.sort()[0],
+    unavailableConnectionIds: unknown,
+  };
+}
+
 export function getQoderAccountAllocationState(providerPolicy, account, allocationValue) {
   const allocated = Math.max(0, Number(allocationValue) || 0);
   const used = getQoderPersistedCreditUsage(providerPolicy, account.id);
@@ -394,6 +420,7 @@ export function getQoderAccountAllocationState(providerPolicy, account, allocati
     && Number.isFinite(Number(account.remainingQuota));
   return {
     allocated, used, remaining, exhausted: remaining <= 0,
+    availableRemaining: remaining <= 0 ? 0 : ready ? Math.min(remaining, Math.max(0, Number(account.remainingQuota))) : null,
     belowUsage: allocated < used,
     maxAssignable: ready ? used + Math.max(0, Number(account.remainingQuota)
       - (Number(account.allocatedToOtherKeys) || 0)) : null,

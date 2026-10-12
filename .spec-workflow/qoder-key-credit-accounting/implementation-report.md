@@ -29,3 +29,15 @@ Authority: user-confirmed-in-current-conversation。输入：requirements.md 和
 ## 发布授权（2026-10-12）
 
 用户最新指令“部署进行生产替换然后push改动”明确授权本轮提交、生产替换和推送，取代上方实现阶段的不发布限制。发布只包含本次已验证业务代码、测试、README/中文文案和四份需求/诊断/实现报告，排除全部 debug、verification、临时数据库及 AGENTS.md。生产保留当前版本和 v39c 回滚容器，切换前备份数据，切换后验证健康与两个真实余额端点；成功后推送 origin/main。发布过程不重算生产历史账本。
+
+该轮发布已完成：290c68c；邮箱验证后GitHub main同步，生产检查通过。发布证据保留在verification/release-result.md。
+
+## 最新补充实现
+
+用户随后要求展示官方消费后的实际可用，并选择共享余额先到先用。输入：[amendments/01-actual-availability.md](./amendments/01-actual-availability.md)。本轮基线290c68c，新增实际可用字段、未知状态、查询时间、列表SSE、30秒自动/焦点/手动刷新、弹窗编辑保留和CC-SWITCH同口径余额。
+
+最新完整报告：[implementation-reports/02-actual-availability.md](./implementation-reports/02-actual-availability.md)。14文件/111测试、构建/TypeScript、实际浏览器30秒刷新、失败恢复和移动布局通过；原有前端Lint基线已记录。补充改动保留在本地，未自动提交、推送或部署；当前生产仍为290c68c。
+
+## 补充版本发布授权
+
+2026-10-12，用户回复“部署并 push”，授权提交上述实际可用补充改动、生产替换和GitHub推送。正式改动与两份补充报告纳入提交，全部debug/verification/AGENTS.md继续排除。发布将额外保留290c68c回滚容器、此前回滚容器及v39c，切换前备份生产数据；验证平台实际可用API、两个余额端点的实际余额/未知状态和公网健康。

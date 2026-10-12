@@ -125,7 +125,8 @@ describe("CC-Switch usage builder", () => {
     expect(result).toMatchObject({
       total: 1000,
       used: 300,
-      remaining: 700,
+      remaining: null,
+      isValid: false,
     });
     expect(result.extra).toContain("1 account unavailable");
   });

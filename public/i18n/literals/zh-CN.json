@@ -1488,5 +1488,9 @@
   "x credit multiplier": "x 额度倍率",
   "Usage is measured from the moment this key's allocation is saved. Qoder settles credits with a short delay, so very recent calls may appear a few minutes late.": "已用量自保存该 Key 分配的时刻开始累计。Qoder 结算存在短暂延迟，最近几分钟的调用可能稍晚才计入。",
   "Used credits belong to this key only. Total is its current allocation; editing allocations or refilling accounts does not reset usage.": "已用量只累计当前 Key 自身的扣费；总额为当前分配额度。修改分配或账号充值不会重置已用量。",
-  "Allocation cannot be less than this key's used credits": "分配额度不能小于当前 Key 已使用的额度"
+  "Allocation cannot be less than this key's used credits": "分配额度不能小于当前 Key 已使用的额度",
+  "Actual available": "实际可用",
+  "Unable to confirm current Qoder balance": "暂无法确认当前余额",
+  "Shared balance, first come first served": "账号余额共享，先到先用，不保证独占",
+  "Last checked": "查询时间"
 }

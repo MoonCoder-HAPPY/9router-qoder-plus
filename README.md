@@ -217,7 +217,9 @@ curl http://127.0.0.1:20128/user/balance \
 
 返回字段包含 `isValid`、`balance`、`remaining`、`total`、`used`、`unit`、`planName` 和 `extra`。Qoder 配额单位固定为 `credits`。
 
-对于已分配额度的 Key，`total` 是当前最新保存的分配额度，`used` 是该 Key 自身累计扣费，`remaining/balance = max(0, total - used)`，与平台 Key 列表和额度弹窗一致。此查询直接读取持久化 Key 用量，不受 Qoder 账号额度接口慢、token 过期的影响。对于没有分配额度的 Key，返回允许使用的启用 Qoder 账号及资源包的汇总可用额度。
+对于已分配额度的 Key，`total` 是当前最新保存的分配额度，`used` 是该 Key 自身累计扣费，`allocationRemaining = max(0, total - used)` 表示账面分配剩余。`balance/remaining` 表示实际可用：逐个账号取 `min(该 Key 在该账号的分配剩余, 官方账号余额)` 再求和，与平台列表及弹窗的“实际可用”一致。官方渠道消费会降低实际可用，但不会增加此 Key 的已用量。账号余额共享，先到先用，不保证某个 Key 独占。
+
+余额查询会读取 Qoder 官方额度，并返回 `quotaCheckedAt` 和 `availabilityStatus`。必要账号读取失败时 `balance/remaining=null`、`isValid=false`，已用和分配信息仍保留；不会把未知余额当成0，也不会把分配剩余冒充实际余额。平台可见时每30秒刷新，回到页面和点击刷新会立即重查；弹窗刷新保留未保存输入。官方结算自身存在延迟，查询时间表示最近核验时间。对于没有分配额度的 Key，返回允许使用的启用 Qoder 账号及资源包的汇总可用额度。
 
 修改分配额度不能低于已有 `used`，等于已用量时可以保存，剩余为 0；调高或调低分配额度均不会清空历史用量。账号充值后可以手动提高 Key 分配值，未修改 Key 时总额不会自动增加。共享账号只为其它 Key 预留其尚未消费的额度，账号整体余额下降不会计入当前 Key。后台弹窗编辑时预览新分配额，点击保存后列表与 CC-SWITCH 查询更新，取消不保存。
 

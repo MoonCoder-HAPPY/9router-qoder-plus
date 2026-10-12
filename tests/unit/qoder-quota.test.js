@@ -9,6 +9,10 @@ import { getQoderUsage } from "../../open-sse/services/usage/misc.js";
 import { parseQuotaData } from "@/app/(dashboard)/dashboard/usage/components/ProviderLimits/utils.js";
 
 describe("Qoder quota usage", () => {
+  it.each([{}, { userQuota: { remaining: null } }, { userQuota: { remaining: "invalid" } }, { userQuota: { remaining: 800 }, orgResourcePackage: { cap: 5000 } }])("does not convert malformed or missing quota into a real zero balance: %j", async body => {
+    proxyAwareFetch.mockResolvedValueOnce(Response.json(body));
+    expect(await getQoderUsage("test-token")).toMatchObject({ message: "Qoder quota is unavailable" });
+  });
   it("passes cancellation through to the upstream quota request", async () => {
     const controller = new AbortController();
     proxyAwareFetch.mockResolvedValueOnce(new Response(JSON.stringify({ userQuota: { total: 1, remaining: 1 } })));
