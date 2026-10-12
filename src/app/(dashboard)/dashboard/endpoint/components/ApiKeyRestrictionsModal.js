@@ -5,6 +5,7 @@ import PropTypes from "prop-types";
 import { Button, ConfirmModal, Input, Modal, Toggle } from "@/shared/components";
 import { translate } from "@/i18n/runtime";
 import { readQuotaEvents } from "@/shared/services/quotaStreamClient.js";
+import { getQoderAccountAllocationState, getQoderPersistedCreditUsage } from "@/shared/services/apiKeyPolicy.js";
 
 function normalizeEditablePolicy(policy) {
   const qoder = policy?.providers?.qoder || {};
@@ -34,38 +35,16 @@ function formatNumber(value) {
   return new Intl.NumberFormat().format(n);
 }
 
-function getExistingConsumedByAccount(policy, accountId, remainingQuota) {
-  const qoder = policy?.providers?.qoder;
-  if (!qoder?.connectionIds?.includes(accountId)) return 0;
-  const initial = Number(qoder.quotaBaseline?.[accountId]?.initialRemainingQuota);
-  const current = Number(remainingQuota);
-  const baselineConsumed = Number.isFinite(initial) && Number.isFinite(current)
-    ? Math.max(0, initial - current)
-    : 0;
-  const ledgerUsed = Number(qoder.creditUsageLedger?.[accountId]?.used);
-  return Math.max(baselineConsumed, Number.isFinite(ledgerUsed) ? ledgerUsed : 0);
+function getExistingConsumedByAccount(policy, accountId) {
+  return getQoderPersistedCreditUsage(policy?.providers?.qoder, accountId);
 }
 
 function getAssignableCreditsForAccount(policy, account) {
-  if (account.quotaStatus !== "ok") return null;
-  const preservedConsumed = getExistingConsumedByAccount(policy, account.id, account.remainingQuota);
-  return Math.max(
-    0,
-    (Number(account.remainingQuota) || 0) + preservedConsumed - (Number(account.allocatedToOtherKeys) || 0)
-  );
+  return getQoderAccountAllocationState(policy?.providers?.qoder, account, 0).maxAssignable;
 }
 
 function getAccountUsageDisplay(policy, account, allocationValue) {
-  const allocated = Number(allocationValue) || 0;
-  if (account.quotaStatus !== "ok") return { allocated, used: null, remaining: null, exhausted: false };
-  const used = getExistingConsumedByAccount(policy, account.id, account.remainingQuota);
-  const remaining = Math.max(0, allocated - used);
-  return {
-    allocated,
-    used,
-    remaining,
-    exhausted: allocated > 0 && remaining <= 0,
-  };
+  return getQoderAccountAllocationState(policy?.providers?.qoder, account, allocationValue);
 }
 
 export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, onSaved }) {
@@ -100,7 +79,7 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
             setQuotaOptions(event);
             setLoadingOptions(false);
           } else if (event.type === "account") {
-            setQuotaOptions(previous => previous ? { providers: { qoder: {
+            setQuotaOptions(previous => previous ? { ...previous, providers: { qoder: {
               ...previous.providers.qoder,
               accounts: previous.providers.qoder.accounts.map(account => account.id === event.account.id ? event.account : account),
               keyUsage: event.keyUsage,
@@ -111,7 +90,7 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
       .catch((e) => {
         if (!cancelled) {
           setError(e.message);
-          setQuotaOptions(previous => previous ? { providers: { qoder: {
+          setQuotaOptions(previous => previous ? { ...previous, providers: { qoder: {
             ...previous.providers.qoder,
             accounts: previous.providers.qoder.accounts.map(account => account.quotaStatus === "loading"
               ? { ...account, quotaStatus: "unavailable", quotaMessage: e.message } : account),
@@ -125,6 +104,7 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
   }, [apiKeyItem, isOpen]);
 
   const accounts = useMemo(() => quotaOptions?.providers?.qoder?.accounts || [], [quotaOptions]);
+  const savedPolicy = quotaOptions?.policy || apiKeyItem?.policy;
   const accountIndex = useMemo(() => new Map(accounts.map((account) => [account.id, account])), [accounts]);
   const selectedAccountList = useMemo(
     () => form.connectionIds.map((id) => accountIndex.get(id)).filter(Boolean),
@@ -136,26 +116,25 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
     () => form.priorityOrder.map((id) => accountIndex.get(id)).filter(Boolean),
     [accountIndex, form.priorityOrder]
   );
-  const selectedPool = selectedAccountList.reduce((sum, account) =>
-    sum + (Number(account.remainingQuota) || 0) + getExistingConsumedByAccount(apiKeyItem?.policy, account.id, account.remainingQuota), 0);
   const keyUsage = quotaOptions?.providers?.qoder?.keyUsage;
-  // The usage summary belongs to the saved policy, not the editable selection.
-  const savedAccountIds = apiKeyItem?.policy?.providers?.qoder?.connectionIds || [];
+  // Route availability refers to saved accounts; credit totals preview the form.
+  const savedAccountIds = savedPolicy?.providers?.qoder?.connectionIds || [];
   const usageReady = !!keyUsage?.enabled && savedAccountIds.length > 0
     && savedAccountIds.every(id => accountIndex.get(id)?.quotaStatus === "ok")
     && !keyUsage.unavailableConnectionIds?.length;
   const activeAccountName = usageReady ? (keyUsage.activeAccountName || translate("None")) : translate("Not ready");
   const allocatedElsewhere = selectedAccountList.reduce((sum, account) => sum + (Number(account.allocatedToOtherKeys) || 0), 0);
-  const maxAssignable = selectedReady ? Math.max(0, selectedPool - allocatedElsewhere) : null;
+  const maxAssignable = selectedReady ? selectedAccountList.reduce((sum, account) =>
+    sum + getAssignableCreditsForAccount(savedPolicy, account), 0) : null;
   const totalAllocation = Object.values(form.accountAllocations).reduce((sum, value) => sum + (Number(value) || 0), 0);
+  const previewUsed = form.connectionIds.reduce((sum, id) => sum + getExistingConsumedByAccount(savedPolicy, id), 0);
+  const previewRemaining = Math.max(0, totalAllocation - previewUsed);
+  const allocationTooLow = form.enabled && form.connectionIds.some(id =>
+    (Number(form.accountAllocations[id]) || 0) < getExistingConsumedByAccount(savedPolicy, id));
   const allocationTooHigh = form.enabled && selectedAccountList.some((account) => {
     if (account.quotaStatus !== "ok") return false;
     const requested = Number(form.accountAllocations[account.id]) || 0;
-    const preservedConsumed = getExistingConsumedByAccount(apiKeyItem?.policy, account.id, account.remainingQuota);
-    const assignable = Math.max(
-      0,
-      (Number(account.remainingQuota) || 0) + preservedConsumed - (Number(account.allocatedToOtherKeys) || 0)
-    );
+    const assignable = getAssignableCreditsForAccount(savedPolicy, account);
     return requested > assignable;
   });
 
@@ -202,7 +181,7 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
   }
 
   async function save() {
-    if (!apiKeyItem || saving || (form.enabled && (!selectedReady || allocationTooHigh))) return;
+    if (!apiKeyItem || saving || (form.enabled && (!selectedReady || allocationTooHigh || allocationTooLow))) return;
     const generation = session.current;
     setSaving(true);
     setError("");
@@ -233,7 +212,8 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
       if (session.current !== generation) return;
       if (!res.ok) {
         setServerExceeded(Object.fromEntries((data.exceededAccounts || []).map((item) => [item.connectionId, item])));
-        throw new Error(data.error || "Failed to save restrictions");
+        const belowUsage = (data.belowUsageAccounts || []).map(item => `${item.name}: ${formatNumber(item.requested)} < ${formatNumber(item.used)}`).join("; ");
+        throw new Error(`${translate(data.error || "Failed to save restrictions")}${belowUsage ? ` (${belowUsage})` : ""}`);
       }
       setServerExceeded(null);
       onSaved(data.key);
@@ -296,12 +276,12 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
                   <div className="rounded border border-border bg-surface-2 p-2">
                     <p className="text-xs text-text-muted">Used / Total</p>
                     <p className="text-sm font-semibold">
-                      {formatNumber(usageReady ? keyUsage.used : null)} / {formatNumber(keyUsage.limit)}
+                      {formatNumber(previewUsed)} / {formatNumber(totalAllocation)}
                     </p>
                   </div>
                   <div className="rounded border border-border bg-surface-2 p-2">
                     <p className="text-xs text-text-muted">Remaining</p>
-                    <p className="text-sm font-semibold">{formatNumber(usageReady ? keyUsage.remaining : null)}</p>
+                    <p className="text-sm font-semibold">{formatNumber(previewRemaining)}</p>
                   </div>
                   <div className="rounded border border-border bg-surface-2 p-2 min-w-0">
                     <p className="text-xs text-text-muted">Active Account</p>
@@ -310,7 +290,7 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
                     </p>
                   </div>
                   <p className="col-span-full text-[11px] leading-snug text-text-muted">
-                    {translate("Usage is measured from the moment this key's allocation is saved. Qoder settles credits with a short delay, so very recent calls may appear a few minutes late.")}
+                    {translate("Used credits belong to this key only. Total is its current allocation; editing allocations or refilling accounts does not reset usage.")}
                   </p>
                 </div>
               )}
@@ -322,7 +302,7 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
                 )}
                 {accounts.map((account) => {
                   const isSelected = form.connectionIds.includes(account.id);
-                  const assignableCredits = getAssignableCreditsForAccount(apiKeyItem?.policy, account);
+                  const assignableCredits = getAssignableCreditsForAccount(savedPolicy, account);
                   return (
                   <div
                     key={account.id}
@@ -378,7 +358,8 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
                           <Input
                             label="Allocated credits"
                             type="number"
-                            min="0"
+                            min={getExistingConsumedByAccount(savedPolicy, account.id)}
+                            step="any"
                             value={form.accountAllocations[account.id] ?? ""}
                             onChange={(e) => updateAccountAllocation(account.id, e.target.value)}
                             placeholder="1000"
@@ -419,6 +400,11 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
                           <span>{formatNumber(serverExceeded[account.id].maxAssignable)}</span>
                         </p>
                       )}
+                      {isSelected && (Number(form.accountAllocations[account.id]) || 0) < getExistingConsumedByAccount(savedPolicy, account.id) && (
+                        <p className="text-xs text-red-500 mt-2">
+                          {translate("Allocation cannot be less than this key's used credits")}: {formatNumber(getExistingConsumedByAccount(savedPolicy, account.id))}
+                        </p>
+                      )}
                       {account.quotaMessage && (
                         <p className="text-xs text-red-500 mt-2">{account.quotaMessage}</p>
                       )}
@@ -441,7 +427,7 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
               ) : (
                 <div>
                   {priorityAccounts.map((account, index) => {
-                    const usage = getAccountUsageDisplay(apiKeyItem?.policy, account, form.accountAllocations[account.id]);
+                    const usage = getAccountUsageDisplay(savedPolicy, account, form.accountAllocations[account.id]);
                     const isActive = usageReady && keyUsage?.activeConnectionId === account.id && !usage.exhausted;
                     const rowClassName = usage.exhausted
                       ? "bg-surface-2/80 text-text-muted"
@@ -554,6 +540,9 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
                 Allocation exceeds the currently assignable Qoder quota.
               </p>
             )}
+            {allocationTooLow && (
+              <p className="text-sm text-red-500">{translate("Allocation cannot be less than this key's used credits")}</p>
+            )}
           </>
         )}
 
@@ -593,7 +582,7 @@ export default function ApiKeyRestrictionsModal({ apiKeyItem, isOpen, onClose, o
               Reset usage
             </Button>
           )}
-          <Button onClick={save} fullWidth disabled={saving || resettingUsage || (form.enabled && (!selectedReady || allocationTooHigh))}>
+          <Button onClick={save} fullWidth disabled={saving || resettingUsage || (form.enabled && (!selectedReady || allocationTooHigh || allocationTooLow))}>
             {saving ? "Saving..." : "Save"}
           </Button>
           <Button onClick={onClose} variant="ghost" fullWidth>

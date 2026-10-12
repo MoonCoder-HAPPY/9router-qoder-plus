@@ -96,6 +96,7 @@ describe("api key policy auth enforcement", () => {
           qoder: {
             connectionIds: ["conn-a"],
             accountAllocations: { "conn-a": 1000 },
+            creditUsageLedger: { "conn-a": { used: 1000, precise: true } },
             metric: "credits",
             quotaBaseline: {
               "conn-a": {
@@ -131,6 +132,7 @@ describe("api key policy auth enforcement", () => {
           qoder: {
             connectionIds: ["conn-a"],
             accountAllocations: { "conn-a": 1000 },
+            creditUsageLedger: { "conn-a": { used: 1000, precise: true } },
             metric: "credits",
             quotaBaseline: {
               "conn-a": {
@@ -174,6 +176,7 @@ describe("api key policy auth enforcement", () => {
           qoder: {
             connectionIds: ["conn-a"],
             accountAllocations: { "conn-a": 1000 },
+            creditUsageLedger: { "conn-a": { used: 850, precise: true } },
             metric: "credits",
             quotaBaseline: {
               "conn-a": {
@@ -199,7 +202,7 @@ describe("api key policy auth enforcement", () => {
     expect(JSON.stringify(alerts.notifyApiKeyQuotaThresholdExceeded.mock.calls[0][0])).not.toContain("sk-secret-value");
   });
 
-  it("enforces Qoder allocation by credit baseline instead of historical token usage", async () => {
+  it("enforces Qoder allocation by key credits instead of historical token usage", async () => {
     const localDb = await import("@/lib/localDb");
     localDb.getApiKeyPolicyUsedTokens.mockResolvedValueOnce(109297763);
 
@@ -320,6 +323,7 @@ describe("api key policy auth enforcement", () => {
             connectionIds: ["conn-a", "conn-b"],
             priorityOrder: ["conn-b", "conn-a"],
             accountAllocations: { "conn-b": 1000, "conn-a": 5000 },
+            creditUsageLedger: { "conn-b": { used: 1000, precise: true }, "conn-a": { used: 1, precise: true } },
             metric: "credits",
             quotaBaseline: {
               "conn-a": {
@@ -340,7 +344,7 @@ describe("api key policy auth enforcement", () => {
     expect(credentials.connectionId).toBe("conn-a");
   });
 
-  it("refreshes Qoder policy quota after use so account allocation overflow can switch accounts", async () => {
+  it("switches accounts after the key's precise credits reach its account budget", async () => {
     const usage = await import("open-sse/services/usage.js");
     let connBRemaining = 2500;
     usage.getUsageForProvider.mockImplementation(async (connection) => {
@@ -361,6 +365,7 @@ describe("api key policy auth enforcement", () => {
             connectionIds: ["conn-a", "conn-b"],
             priorityOrder: ["conn-b", "conn-a"],
             accountAllocations: { "conn-b": 1000, "conn-a": 5000 },
+            creditUsageLedger: { "conn-b": { used: 500, precise: true } },
             metric: "credits",
             quotaBaseline: {
               "conn-a": {
@@ -384,6 +389,7 @@ describe("api key policy auth enforcement", () => {
     expect(first.connectionId).toBe("conn-b");
 
     connBRemaining = 1999;
+    policyOptions.apiKeyPolicy.providers.qoder.creditUsageLedger["conn-b"].used = 1001;
     await clearAccountError(first.connectionId, first, "auto");
 
     const second = await getProviderCredentials("qoder", null, "auto", policyOptions);

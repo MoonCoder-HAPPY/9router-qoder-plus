@@ -157,6 +157,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
             provider: providerId,
             currentRemainingByConnectionId: remainingByConnectionId,
             creditUsageLedger,
+            useBaselineFallback: false,
           });
           if (options?.apiKeyRecord?.id) {
             await updateApiKeyQoderCreditUsageLedger(options.apiKeyRecord.id, remainingByConnectionId).catch((error) => {

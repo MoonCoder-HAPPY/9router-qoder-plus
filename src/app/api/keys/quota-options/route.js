@@ -4,15 +4,14 @@ import { NextResponse } from "next/server";
 import { getApiKeys, getProviderConnections } from "@/lib/localDb";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import {
-  calculateAllowedAllocation,
   evaluateApiKeyProviderCreditUsage,
-  getAccountAllocationLimit,
-  getQoderPersistedCreditUsage,
+  getAccountRemainingAllocation,
   getProviderPolicy,
   sumQoderRemainingQuota,
 } from "@/shared/services/apiKeyPolicy.js";
 import { getUsageForProvider } from "open-sse/services/usage.js";
 import { queryQuotaAccounts, quotaEventResponse } from "@/shared/services/quotaQuery.js";
+export { validateQoderPolicyAllocation } from "@/shared/services/qoderKeyAllocation.js";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +27,7 @@ export function getAllocatedToAccount(policies, accountId, provider = "qoder") {
       return sum + providerPolicy.allocationLimit;
     }
     if (providerPolicy.connectionIds.includes(accountId)) {
-      return sum + getAccountAllocationLimit(providerPolicy, accountId);
+      return sum + getAccountRemainingAllocation(providerPolicy, accountId);
     }
     return sum;
   }, 0);
@@ -59,7 +58,7 @@ export function buildQoderKeyUsageState(policy, accounts) {
     policy,
     provider: "qoder",
     currentRemainingByConnectionId,
-    useBaselineFallback: true,
+    useBaselineFallback: false,
   });
   const activeAccount = usageState.activeConnectionId ? accountMap.get(usageState.activeConnectionId) : null;
   return {
@@ -132,81 +131,6 @@ export async function buildQoderQuotaOptions({ excludeKeyId = null, connectionId
   }, { signal });
   if (!signal?.aborted) emit?.({ type: "complete" });
   return options();
-}
-
-export function validateQoderPolicyAllocation(policy, quotaOptions, otherPolicies, existingPolicy = null) {
-  const qoderPolicy = getProviderPolicy(policy, "qoder");
-  if (!qoderPolicy) {
-    return { ok: true };
-  }
-  if (qoderPolicy.connectionIds.length === 0) return { ok: false, error: "Select at least one Qoder account" };
-  const accounts = quotaOptions?.providers?.qoder?.accounts || [];
-  const accountRemainingById = Object.fromEntries(accounts.map((account) => [account.id, account.remainingQuota || 0]));
-  const existingQoderPolicy = getProviderPolicy(existingPolicy, "qoder");
-  if (existingQoderPolicy) {
-    for (const connectionId of qoderPolicy.connectionIds || []) {
-      if (!existingQoderPolicy.connectionIds?.includes(connectionId)) continue;
-      const initial = Number(existingQoderPolicy.quotaBaseline?.[connectionId]?.initialRemainingQuota);
-      const current = Number(accountRemainingById[connectionId]);
-      const baselineConsumed = Number.isFinite(initial) && Number.isFinite(current)
-        ? Math.max(0, initial - current)
-        : 0;
-      const persistedConsumed = getQoderPersistedCreditUsage(existingQoderPolicy, connectionId);
-      accountRemainingById[connectionId] = current + Math.max(baselineConsumed, persistedConsumed);
-    }
-  }
-  const selectedConnectionIds = qoderPolicy.connectionIds;
-  const hasUnavailableSelected = accounts.some((account) =>
-    selectedConnectionIds.includes(account.id) && account.quotaStatus !== "missing"
-      && (account.quotaStatus !== "ok" || account.remainingQuota == null || !Number.isFinite(Number(account.remainingQuota)))
-  );
-  if (hasUnavailableSelected) {
-    return { ok: false, error: "Unable to validate selected Qoder account quota right now" };
-  }
-  const allocation = calculateAllowedAllocation({
-    selectedConnectionIds,
-    accountRemainingById,
-    otherPolicies,
-    provider: "qoder",
-  });
-  const accountById = Object.fromEntries(accounts.map((account) => [account.id, account]));
-  const accountNameById = Object.fromEntries(accounts.map((account) => [account.id, account.name]));
-  const perAccount = {};
-  const exceededAccounts = [];
-  let hasExceeded = false;
-  for (const connectionId of selectedConnectionIds) {
-    const selectedPool = Number(accountRemainingById[connectionId]) || 0;
-    const allocatedToOtherKeys = (otherPolicies || []).reduce((sum, rawPolicy) => {
-      const providerPolicy = getProviderPolicy(rawPolicy, "qoder");
-      if (!providerPolicy || !providerPolicy.connectionIds?.includes(connectionId)) return sum;
-      return sum + getAccountAllocationLimit(providerPolicy, connectionId);
-    }, 0);
-    const maxAssignable = Math.max(0, selectedPool - allocatedToOtherKeys);
-    const requested = getAccountAllocationLimit(qoderPolicy, connectionId);
-    perAccount[connectionId] = { selectedPool, allocatedToOtherKeys, maxAssignable, requested };
-    if (requested > maxAssignable || !accountById[connectionId] || accountById[connectionId].quotaStatus === "missing") {
-      hasExceeded = true;
-      exceededAccounts.push({
-        connectionId,
-        name: accountNameById[connectionId] || connectionId,
-        missing: accountById[connectionId]?.quotaStatus === "missing" || !accountNameById[connectionId],
-        remaining: selectedPool,
-        allocatedToOtherKeys,
-        maxAssignable,
-        requested,
-      });
-    }
-  }
-  allocation.perAccount = perAccount;
-  if (hasExceeded || qoderPolicy.allocationLimit > allocation.maxAssignable) {
-    return {
-      ok: false,
-      error: "Allocation exceeds selected Qoder accounts' currently assignable quota",
-      exceededAccounts,
-      allocation,
-    };
-  }
-  return { ok: true, allocation };
 }
 
 export async function GET(request) {

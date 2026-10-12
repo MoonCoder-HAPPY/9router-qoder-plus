@@ -44,7 +44,8 @@ export function buildCcSwitchUsage({ keyName, providerPolicy, accounts = [] }) {
     const currentRemainingByConnectionId = Object.fromEntries(
       (qoderPolicy.connectionIds || []).map((connectionId) => {
         const account = accountMap.get(connectionId);
-        const unavailable = !account || account.quotaStatus === "unavailable";
+        const unavailable = !account || account.quotaStatus !== "ok"
+          || account.remainingQuota == null || !Number.isFinite(Number(account.remainingQuota));
         return [
           connectionId,
           {
@@ -58,10 +59,10 @@ export function buildCcSwitchUsage({ keyName, providerPolicy, accounts = [] }) {
       policy: { enabled: true, providers: { qoder: qoderPolicy } },
       provider: "qoder",
       currentRemainingByConnectionId,
-      useBaselineFallback: true,
+      useBaselineFallback: false,
     });
     const total = qoderPolicy.allocationLimit;
-    const used = Math.min(total, Math.max(0, Number(state.used) || 0));
+    const used = Math.max(0, Number(state.used) || 0);
     const remaining = Math.max(0, total - used);
     return {
       isValid: true,

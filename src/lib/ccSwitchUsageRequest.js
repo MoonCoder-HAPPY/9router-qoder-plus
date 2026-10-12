@@ -8,6 +8,7 @@ import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { getProviderPolicy, sumQoderRemainingQuota } from "@/shared/services/apiKeyPolicy.js";
 import { buildCcSwitchUsage } from "@/shared/services/ccSwitchUsage.js";
 import { getUsageForProvider } from "open-sse/services/usage.js";
+import { queryQuotaAccounts } from "@/shared/services/quotaQuery.js";
 
 function extractBearerKey(request) {
   const authorization = request.headers.get("authorization") || "";
@@ -15,7 +16,7 @@ function extractBearerKey(request) {
   return request.headers.get("x-api-key")?.trim() || "";
 }
 
-async function loadAccountUsage(connection) {
+async function loadAccountUsage(connection, signal) {
   try {
     const proxyConfig = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
     const usage = await getUsageForProvider(connection, {
@@ -24,6 +25,7 @@ async function loadAccountUsage(connection) {
       connectionNoProxy: proxyConfig.connectionNoProxy || "",
       vercelRelayUrl: proxyConfig.vercelRelayUrl || "",
       strictProxy: false,
+      signal,
     });
     if (usage?.message || usage?.error) {
       return {
@@ -36,6 +38,7 @@ async function loadAccountUsage(connection) {
       };
     }
     const summed = sumQoderRemainingQuota(usage);
+    if (!summed.rows.length) throw new Error("Qoder quota is unavailable");
     return {
       id: connection.id,
       name: connection.displayName || connection.name || connection.email || connection.id,
@@ -82,16 +85,13 @@ export async function queryCcSwitchUsage(request, { includeActiveField = false }
 
   const providerPolicy = getProviderPolicy(apiKeyRecord.policy, "qoder");
   let connections = await getProviderConnections({ provider: "qoder", isActive: true });
-  if (
-    providerPolicy?.allocationLimit !== null
-    && providerPolicy?.allocationLimit !== undefined
-    && providerPolicy.connectionIds.length > 0
-  ) {
+  if (providerPolicy?.connectionIds.length > 0) {
     const allowed = new Set(providerPolicy.connectionIds);
     connections = connections.filter((connection) => allowed.has(connection.id));
   }
 
-  if (connections.length === 0) {
+  const allocated = providerPolicy?.allocationLimit != null;
+  if (connections.length === 0 && !allocated) {
     return {
       status: 200,
       body: {
@@ -103,9 +103,21 @@ export async function queryCcSwitchUsage(request, { includeActiveField = false }
     };
   }
 
-  const accounts = [];
-  for (const connection of connections) {
-    accounts.push(await loadAccountUsage(connection));
+  let accounts = connections.map(connection => ({
+    id: connection.id,
+    name: connection.displayName || connection.name || connection.email || connection.id,
+    quotaStatus: "not_queried", remainingQuota: null, quotaRows: [],
+  }));
+  // A Key's allocation balance is stored locally and does not depend on an
+  // upstream quota query. Even an expired account token cannot erase it.
+  if (!allocated) {
+    const results = new Map();
+    await queryQuotaAccounts(connections, loadAccountUsage, (connection, result) => {
+      results.set(connection.id, { id: connection.id, name: connection.name || connection.id, ...result });
+    }, { signal: request.signal });
+    accounts = connections.map(connection => results.get(connection.id) || {
+      id: connection.id, quotaStatus: "unavailable", remainingQuota: null, quotaRows: [],
+    });
   }
 
   const usage = buildCcSwitchUsage({

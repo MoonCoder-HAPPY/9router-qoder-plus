@@ -204,13 +204,13 @@ describe("api key policy", () => {
       policy,
       provider: "qoder",
       currentRemainingByConnectionId: { a: 2500, b: 1601 },
-    })).toMatchObject({ allowed: true, used: 500, limit: 1000, remaining: 500, activeConnectionId: "a" });
+    })).toMatchObject({ allowed: true, used: 899, limit: 1000, remaining: 101, activeConnectionId: "a" });
 
     expect(evaluateApiKeyProviderCreditUsage({
       policy,
       provider: "qoder",
       currentRemainingByConnectionId: { a: 2300, b: 1600 },
-    })).toMatchObject({ allowed: false, reason: "quota_exhausted", used: 1000, limit: 1000 });
+    })).toMatchObject({ allowed: false, reason: "quota_exhausted", used: 1100, limit: 1000 });
   });
 
   it("moves Qoder credit consumption to the next priority account after the previous segment is consumed", () => {
@@ -243,7 +243,7 @@ describe("api key policy", () => {
     })).toMatchObject({ allowed: true, used: 3001, activeConnectionId: "a" });
   });
 
-  it("caps Qoder credit usage at each account allocation after earlier priorities are consumed", () => {
+  it("preserves full usage instead of clipping accounting at account budgets", () => {
     const policy = normalizeApiKeyPolicy({
       enabled: true,
       providers: {
@@ -268,15 +268,15 @@ describe("api key policy", () => {
       provider: "qoder",
       currentRemainingByConnectionId: { a: 0, b: 116690, c: 5391 },
     })).toMatchObject({
-      allowed: true,
-      used: 24164,
+      allowed: false,
+      used: 78853,
       limit: 29000,
-      remaining: 4836,
+      remaining: 0,
       activeConnectionId: "c",
     });
   });
 
-  it("does not count later priority accounts before earlier account allocation is consumed", () => {
+  it("counts later priority accounts even before earlier account allocation is consumed", () => {
     const policy = normalizeApiKeyPolicy({
       enabled: true,
       providers: {
@@ -298,9 +298,9 @@ describe("api key policy", () => {
       currentRemainingByConnectionId: { first: 7737, second: 96925 },
     })).toMatchObject({
       allowed: true,
-      used: 429,
+      used: 11846,
       limit: 20000,
-      remaining: 19571,
+      remaining: 8154,
       activeConnectionId: "first",
     });
   });
@@ -356,9 +356,9 @@ describe("api key policy", () => {
       },
     })).toMatchObject({
       allowed: true,
-      used: 8027,
+      used: 8031,
       limit: 20000,
-      remaining: 11973,
+      remaining: 11969,
       activeConnectionId: "second",
     });
   });
@@ -429,9 +429,9 @@ describe("api key policy", () => {
       },
     })).toMatchObject({
       allowed: true,
-      used: 1659,
+      used: 1719,
       limit: 19000,
-      remaining: 17341,
+      remaining: 17281,
       activeConnectionId: "second",
     });
   });
@@ -508,7 +508,7 @@ describe("api key policy", () => {
     });
   });
 
-  it("adds only the newly observed Qoder quota drop to persisted credit usage", () => {
+  it("does not attribute a newly observed account quota drop to this key", () => {
     const policy = normalizeApiKeyPolicy({
       enabled: true,
       providers: {
@@ -532,16 +532,17 @@ describe("api key policy", () => {
       updatedAt: "2026-08-14T01:00:00.000Z",
     });
 
-    expect(ledger.first.used).toBe(5100);
+    expect(ledger.first.used).toBe(5000);
     expect(evaluateApiKeyProviderCreditUsage({
       policy,
       provider: "qoder",
       currentRemainingByConnectionId: { first: 1100 },
       creditUsageLedger: ledger,
+      useBaselineFallback: false,
     })).toMatchObject({
       allowed: true,
-      used: 5100,
-      remaining: 900,
+      used: 5000,
+      remaining: 1000,
       activeConnectionId: "first",
     });
   });
@@ -570,7 +571,7 @@ describe("api key policy", () => {
       updatedAt: "2026-08-14T01:00:00.000Z",
     });
 
-    expect(ledger.first.used).toBe(2200);
+    expect(ledger.first.used).toBe(1200);
   });
 
   it("keeps the first priority account active when it has no usage and no quota growth", () => {
@@ -624,9 +625,9 @@ describe("api key policy", () => {
       },
     })).toMatchObject({
       allowed: true,
-      used: 0,
+      used: 1000,
       limit: 11000,
-      remaining: 11000,
+      remaining: 10000,
       activeConnectionId: "first",
     });
   });
@@ -838,6 +839,7 @@ describe("api key policy", () => {
           connectionIds: ["a", "b", "c"],
           priorityOrder: ["a", "b", "c"],
           accountAllocations: { a: 10000, b: 14000, c: 5000 },
+          creditUsageLedger: { a: { used: 4894, precise: true } },
           quotaBaseline: {
             a: { initialRemainingQuota: 13357, capturedAt: "2026-08-04T10:44:50.276Z" },
             b: { initialRemainingQuota: 182022, capturedAt: "2026-08-04T10:44:50.276Z" },
@@ -903,6 +905,7 @@ describe("api key policy", () => {
           connectionIds: ["a"],
           priorityOrder: ["a"],
           accountAllocations: { a: 4092 },
+          creditUsageLedger: { a: { used: 195, precise: true } },
           quotaBaseline: {
             a: { initialRemainingQuota: 4092, capturedAt: "2026-07-28T03:22:35.521Z" },
           },

@@ -212,34 +212,32 @@ export function evaluateApiKeyProviderCreditUsage({ policy, provider, currentRem
   let activeConnectionId = null;
 
   for (const connectionId of selectedConnectionIds) {
-    const initial = Number(baseline[connectionId]?.initialRemainingQuota);
     const currentState = normalizeCurrentQuotaState(currentRemainingByConnectionId?.[connectionId]);
     const current = currentState.remaining;
     const accountLimit = getAccountAllocationLimit(providerPolicy, connectionId);
     const ledgerUsed = Number(ledger[connectionId]?.used);
     const previousUsed = Number.isFinite(ledgerUsed) ? Math.max(0, ledgerUsed) : 0;
-    const countedPreviousUsage = accountLimit > 0 ? Math.min(previousUsed, accountLimit) : 0;
-    if (!Number.isFinite(initial) || !Number.isFinite(current)) {
-      used += countedPreviousUsage;
+    const consumed = useBaselineFallback && Number.isFinite(current)
+      ? calculateQuotaConsumed(baseline[connectionId], currentState) : 0;
+    const effectiveConsumed = ledger[connectionId]?.precise === true
+      ? previousUsed
+      : Math.max(Number.isFinite(consumed) ? consumed : 0, previousUsed);
+    // Route priority must never truncate accounting for later accounts.
+    used += effectiveConsumed;
+    if (effectiveConsumed >= accountLimit) exhaustedConnectionIds.push(connectionId);
+    if (!Number.isFinite(current)) {
       unavailableConnectionIds.push(connectionId);
       continue;
     }
-    const consumed = useBaselineFallback ? calculateQuotaConsumed(baseline[connectionId], currentState) : 0;
-    const effectiveConsumed = ledger[connectionId]?.precise === true
-      ? previousUsed
-      : Math.max(consumed, previousUsed);
-    const countedConsumed = accountLimit > 0 ? Math.min(effectiveConsumed, accountLimit) : 0;
-    used += countedConsumed;
     if (current > 0 && effectiveConsumed < accountLimit) {
       const grewAboveBaseline = hasQuotaGrownAboveBaseline(baseline[connectionId], currentState);
-      if (ledger[connectionId]?.precise === true || effectiveConsumed > 0 || !grewAboveBaseline) {
-        activeConnectionId = connectionId;
-        break;
+      if (!useBaselineFallback || ledger[connectionId]?.precise === true || effectiveConsumed > 0 || !grewAboveBaseline) {
+        activeConnectionId ??= connectionId;
       }
       continue;
     }
     // Verifiable but over budget / out of remaining quota: do not route here.
-    exhaustedConnectionIds.push(connectionId);
+    if (!exhaustedConnectionIds.includes(connectionId)) exhaustedConnectionIds.push(connectionId);
   }
 
   const usedAmount = Math.max(0, used);
@@ -252,9 +250,8 @@ export function evaluateApiKeyProviderCreditUsage({ policy, provider, currentRem
 
 export function mergeQoderCreditUsageLedger({ providerPolicy, currentRemainingByConnectionId, updatedAt = new Date().toISOString() }) {
   const connectionIds = getOrderedPolicyConnectionIds({ enabled: true, providers: { qoder: providerPolicy } }, "qoder");
-  const previousLedger = normalizeCreditUsageLedger(providerPolicy?.creditUsageLedger, connectionIds);
-  const baseline = providerPolicy?.quotaBaseline || {};
-  const nextLedger = {};
+  const previousLedger = normalizeCreditUsageLedger(providerPolicy?.creditUsageLedger, null);
+  const nextLedger = { ...previousLedger };
 
   for (const connectionId of connectionIds) {
     const currentState = normalizeCurrentQuotaState(currentRemainingByConnectionId?.[connectionId]);
@@ -265,20 +262,10 @@ export function mergeQoderCreditUsageLedger({ providerPolicy, currentRemainingBy
     const previous = previousLedger[connectionId] || {};
     const previousUsed = Number(previous.used);
     const previousUsedAmount = Number.isFinite(previousUsed) ? previousUsed : 0;
-    const hasPreviousCheckpoint = Number.isFinite(Number(previous.lastRemainingQuota));
-    const baselineConsumed = hasPreviousCheckpoint ? 0 : calculateQuotaConsumed(baseline[connectionId], currentState);
-
-    const lastRemaining = Number(previous.lastRemainingQuota);
-    let observedDrop = 0;
-    if (Number.isFinite(lastRemaining) && currentState.remaining < lastRemaining) {
-      observedDrop = lastRemaining - currentState.remaining;
-    }
-    const used = previous.precise === true
-      ? previousUsedAmount
-      : Math.max(0, previousUsedAmount, baselineConsumed, previousUsedAmount + observedDrop);
-
     nextLedger[connectionId] = {
-      used,
+      // An account's balance drop may belong to another Key or Qoder client.
+      // Preserve the historical ledger; only request credits add consumption.
+      used: Math.max(0, previousUsedAmount),
       lastRemainingQuota: currentState.remaining,
       ...(previous.precise === true ? { precise: true } : {}),
       updatedAt,
@@ -312,11 +299,11 @@ export function applyQoderPreciseCreditUsage({
 function normalizeCurrentQuotaState(value) {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     return {
-      remaining: Number(value.remaining),
+      remaining: value.remaining == null ? Number.NaN : Number(value.remaining),
       quotaRows: normalizeQuotaRows(value.quotaRows),
     };
   }
-  return { remaining: Number(value), quotaRows: [] };
+  return { remaining: value == null ? Number.NaN : Number(value), quotaRows: [] };
 }
 
 function calculateQuotaConsumed(baselineEntry, currentState) {
@@ -394,6 +381,25 @@ export function getQoderPersistedCreditUsage(providerPolicy, connectionId) {
   return Number.isFinite(used) && used > 0 ? used : 0;
 }
 
+export function getAccountRemainingAllocation(providerPolicy, connectionId) {
+  return Math.max(0, getAccountAllocationLimit(providerPolicy, connectionId)
+    - getQoderPersistedCreditUsage(providerPolicy, connectionId));
+}
+
+export function getQoderAccountAllocationState(providerPolicy, account, allocationValue) {
+  const allocated = Math.max(0, Number(allocationValue) || 0);
+  const used = getQoderPersistedCreditUsage(providerPolicy, account.id);
+  const remaining = Math.max(0, allocated - used);
+  const ready = account.quotaStatus === "ok" && account.remainingQuota != null
+    && Number.isFinite(Number(account.remainingQuota));
+  return {
+    allocated, used, remaining, exhausted: remaining <= 0,
+    belowUsage: allocated < used,
+    maxAssignable: ready ? used + Math.max(0, Number(account.remainingQuota)
+      - (Number(account.allocatedToOtherKeys) || 0)) : null,
+  };
+}
+
 export function shouldRefreshQoderQuotaBaseline(previousProviderPolicy, nextProviderPolicy) {
   if (!nextProviderPolicy) return false;
   if (!previousProviderPolicy) return true;
@@ -452,7 +458,7 @@ export function calculateAllowedAllocation({ selectedConnectionIds, accountRemai
       continue;
     }
     for (const id of providerPolicy.connectionIds) {
-      if (selected.has(id)) allocatedToOtherKeys += getAccountAllocationLimit(providerPolicy, id);
+      if (selected.has(id)) allocatedToOtherKeys += getAccountRemainingAllocation(providerPolicy, id);
     }
   }
 

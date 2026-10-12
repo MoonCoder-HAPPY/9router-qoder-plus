@@ -6,6 +6,7 @@ import {
   mergeQoderCreditUsageLedger,
   normalizeApiKeyPolicy,
 } from "@/shared/services/apiKeyPolicy.js";
+import { validateQoderPolicyAllocation } from "@/shared/services/qoderKeyAllocation.js";
 
 function rowToKey(row) {
   if (!row) return null;
@@ -67,14 +68,37 @@ export async function createApiKey(name, machineId) {
   return apiKey;
 }
 
-export async function updateApiKey(id, data) {
+export async function updateApiKey(id, data, { qoderQuotaOptions = null, preserveQoderUsage = false } = {}) {
   const db = await getAdapter();
   let result = null;
   db.transaction(() => {
     const row = db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]);
     if (!row) return;
-    const merged = { ...rowToKey(row), ...data };
+    const current = rowToKey(row);
+    const merged = { ...current, ...data };
     merged.policy = normalizeApiKeyPolicy(merged.policy);
+    if (qoderQuotaOptions) {
+      // The network lookup happens outside the transaction. Recheck current
+      // usage and other Keys' reservations inside it before applying a budget.
+      const otherPolicies = db.all(`SELECT policy FROM apiKeys WHERE id <> ?`, [id])
+        .map(other => normalizeApiKeyPolicy(other.policy));
+      const validation = validateQoderPolicyAllocation(merged.policy, qoderQuotaOptions, otherPolicies, current.policy);
+      if (!validation.ok) throw Object.assign(new Error(validation.error), { validation });
+    }
+    if (preserveQoderUsage || qoderQuotaOptions) {
+      const previousQoder = current.policy.providers.qoder;
+      const nextQoder = merged.policy.providers.qoder;
+      if (nextQoder) {
+        nextQoder.creditUsageLedger = {
+          ...nextQoder.creditUsageLedger,
+          ...previousQoder?.creditUsageLedger,
+        };
+        nextQoder.startedAt = previousQoder?.startedAt || nextQoder.startedAt;
+        nextQoder.quotaBaseline = { ...nextQoder.quotaBaseline, ...previousQoder?.quotaBaseline };
+      } else if (previousQoder) {
+        merged.policy.providers.qoder = previousQoder;
+      }
+    }
     db.run(
       `UPDATE apiKeys SET key = ?, name = ?, machineId = ?, isActive = ?, policy = ? WHERE id = ?`,
       [merged.key, merged.name, merged.machineId, merged.isActive ? 1 : 0, stringifyJson(merged.policy), id]
@@ -120,7 +144,7 @@ export async function recordApiKeyQoderCreditUsage(apiKey, connectionId, credits
     if (!row) return;
     const record = rowToKey(row);
     const policy = normalizeApiKeyPolicy(record.policy);
-    if (!policy.enabled || !policy.providers.qoder) return;
+    if (!policy.providers.qoder) return;
 
     const ledger = applyQoderPreciseCreditUsage({
       providerPolicy: policy.providers.qoder,
